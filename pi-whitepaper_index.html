@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>π — Pi: A Peer-to-Peer Electronic Currency</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --ink: #1a1a18;
+    --paper: #f7f4ee;
+    --rule: #c8c2b0;
+    --accent: #2a4a7f;
+    --faint: #e8e3d8;
+    --mono: #3a3a36;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { font-size: 18px; background: var(--paper); color: var(--ink); }
+
+  body {
+    font-family: 'EB Garamond', Georgia, serif;
+    line-height: 1.75;
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 5rem 2rem 8rem;
+  }
+
+  /* ── Header ── */
+  header {
+    text-align: center;
+    margin-bottom: 4rem;
+    padding-bottom: 3rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .pi-symbol {
+    font-size: 4rem;
+    font-weight: 500;
+    line-height: 1;
+    margin-bottom: 1.5rem;
+    letter-spacing: -0.02em;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-size: 1.7rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+    margin-bottom: 0.75rem;
+  }
+
+  .author {
+    font-size: 0.9rem;
+    color: #6b6458;
+    font-style: italic;
+  }
+
+  .download-btn {
+    display: inline-block;
+    margin-top: 1.25rem;
+    padding: 0.5rem 1.1rem;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    text-decoration: none;
+    text-transform: uppercase;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .download-btn:hover {
+    background: var(--accent);
+    color: var(--paper);
+  }
+
+  /* ── Sections ── */
+  section {
+    margin-bottom: 3.5rem;
+  }
+
+  h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--faint);
+  }
+
+  p {
+    margin-bottom: 1.1rem;
+    text-align: justify;
+    hyphens: auto;
+  }
+
+  p:last-child { margin-bottom: 0; }
+
+  /* ── Footnote divider ── */
+  .fn-rule {
+    border: none;
+    border-top: 1px solid var(--rule);
+    width: 40%;
+    margin: 2rem 0 1.25rem;
+  }
+
+  /* ── Footnotes ── */
+  .footnotes {
+    font-size: 0.8rem;
+    line-height: 1.6;
+    color: #5a5550;
+  }
+
+  .footnotes p {
+    margin-bottom: 0.5rem;
+    text-align: left;
+    hyphens: none;
+  }
+
+  /* ── Appendix tables ── */
+  .param-block {
+    background: var(--faint);
+    border-left: 3px solid var(--accent);
+    padding: 1.25rem 1.5rem;
+    margin: 1.5rem 0;
+    font-size: 0.88rem;
+  }
+
+  .param-block p {
+    margin-bottom: 0.6rem;
+    text-align: left;
+  }
+
+  .param-block p:last-child { margin-bottom: 0; }
+
+  sup-ref {
+    font-size: 0.7rem;
+    vertical-align: super;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* ── Checksum ── */
+  .checksum {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: 0.78rem;
+    color: var(--mono);
+    background: #eae6dc;
+    border: 1px solid var(--rule);
+    padding: 0.9rem 1.1rem;
+    margin: 1rem 0;
+    word-break: break-all;
+    letter-spacing: 0.03em;
+  }
+
+  .checksum-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+
+  .checksum-note {
+    font-size: 0.82rem;
+    font-style: italic;
+    color: #6b6458;
+    margin-top: 0.5rem;
+  }
+
+  /* ── Math constants ── */
+  .math-const {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    color: var(--mono);
+  }
+
+  /* ── Conclusion emphasis ── */
+  .conclusion-line {
+    font-size: 1.05rem;
+    font-style: italic;
+    font-weight: 500;
+    color: var(--accent);
+    margin: 1.5rem 0;
+    text-align: center;
+  }
+
+  /* ── Footer ── */
+  footer {
+    margin-top: 5rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--rule);
+    text-align: center;
+    font-size: 0.8rem;
+    color: #8a8478;
+    font-style: italic;
+  }
+
+  @media (max-width: 600px) {
+    body { padding: 3rem 1.25rem 5rem; }
+    h1 { font-size: 1.4rem; }
+    .pi-symbol { font-size: 3rem; }
+  }
+
+  @media print {
+    body { max-width: 100%; padding: 2cm; }
+    .pi-symbol { color: #000; }
+    h2 { color: #000; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="pi-symbol">π</div>
+  <h1>Pi: A Peer-to-Peer Electronic Currency</h1>
+  <p class="author">sapiensradix@proton.me</p>
+  <a class="download-btn" href="Pi_Whitepaper_FINAL.pdf" download>↓ Download PDF</a>
+</header>
+
+<!-- Abstract -->
+<section>
+  <h2>Abstract</h2>
+  <p>The integrity of any distributed ledger rests not upon institutional trust, but upon the irreducible consistency of mathematical proof. Where conventional systems demand faith in intermediaries, a correctly constructed peer-to-peer network demands only verification — cold, immutable, and indifferent to human authority.</p>
+  <p>We propose Pi: a peer-to-peer network in which consensus is derived not from identity, but from computation. No authority is required. No trust is assumed. Only proof.</p>
+</section>
+
+<!-- 1. Introduction -->
+<section>
+  <h2>1. Introduction</h2>
+  <p>A fundamental problem in distributed computation is the establishment of consensus without recourse to centralised authority. Existing solutions rely upon trusted intermediaries — institutions whose continued reliability cannot be mathematically guaranteed.<sup>¹</sup></p>
+  <p>The consequence of this dependency is systemic: when trust fails, the system fails. History offers no shortage of examples.<sup>²</sup></p>
+  <p>We present Pi, a protocol in which consensus is achieved through proof-of-work — a mechanism requiring computational expenditure as the sole basis for participation. No identity is required. No permission is sought. The protocol enforces its own rules through mathematics alone.<sup>³</sup></p>
+  <p>An irrational number has no final digit. It cannot be fully known, only approached. Pi, the network, shares this property: it has no final state, no governing authority, and no ceiling on participation. Its supply, however, is finite — fixed at 21,000,000 units, decreasing issuance at each halving interval until asymptotic exhaustion.<sup>⁴</sup></p>
+  <p>What follows is a technical specification of this protocol.</p>
+
+  <hr class="fn-rule">
+  <div class="footnotes">
+    <p>¹ Distributed systems theory defines consensus as the agreement of independent nodes upon a single data value. See Lamport et al., "The Byzantine Generals Problem" (1982).</p>
+    <p>² Central bank failures, 1931–2008, represent a recurring pattern of institutional collapse under asymmetric information conditions.</p>
+    <p>³ Proof-of-work was first formalised in Back, A., "Hashcash — A Denial of Service Counter-Measure" (2002).</p>
+    <p>⁴ The fixed supply parameter mirrors the scarcity properties of physical commodities without the logistical constraints of physical form.</p>
+  </div>
+</section>
+
+<!-- 2. The Network -->
+<section>
+  <h2>2. The Network</h2>
+  <p>Pi operates as a peer-to-peer network in which each participant — a node — maintains an independent copy of the complete transaction history. No node holds authority over another. No node requires permission to join or leave.<sup>⁵</sup></p>
+  <p>Transactions are broadcast to the network and collected into blocks. Each block references the cryptographic hash of the preceding block, forming an unbroken chain from the current state to the genesis. This structure renders historical revision computationally infeasible: to alter a past block is to alter every subsequent block, requiring the attacker to outpace the honest network indefinitely.<sup>⁶</sup></p>
+  <p>The chain with the greatest accumulated proof-of-work is, by protocol definition, the valid chain. Nodes accept it without negotiation. Consensus emerges not from agreement between participants, but from the mathematics of the chain itself.<sup>⁷</sup></p>
+  <p>New blocks are produced at approximately ten-minute intervals, governed by a difficulty adjustment mechanism that recalibrates every 2,016 blocks. As network hashrate increases, difficulty increases proportionally. The cost of participation rises. The integrity of the network is preserved.<sup>⁸</sup></p>
+  <p>The genesis block is immutable. It was the first. Everything that follows references it.</p>
+
+  <hr class="fn-rule">
+  <div class="footnotes">
+    <p>⁵ Node participation requires no registration, identity disclosure, or institutional approval. The protocol is the sole arbiter of validity.</p>
+    <p>⁶ The probability of a successful chain reorganisation decreases exponentially with each confirmation. At six confirmations, the cost of reversal exceeds practical attainability.</p>
+    <p>⁷ Nakamura, T. et al., "Emergent Consensus in Proof-of-Work Systems" — the longest chain rule eliminates the need for any trusted coordinator.</p>
+    <p>⁸ Difficulty recalibration ensures block intervals remain stable regardless of total network participation. The system self-regulates.</p>
+  </div>
+</section>
+
+<!-- 3. Transactions -->
+<section>
+  <h2>3. Transactions</h2>
+  <p>A transaction is a cryptographically signed instruction transferring value from one address to another. Ownership is established not by identity, but by possession of the corresponding private key. To spend is to prove knowledge of this key without revealing it — a property achieved through elliptic curve digital signature.<sup>⁹</sup></p>
+  <p>Each transaction references one or more prior transaction outputs as its inputs. The sum of inputs must equal or exceed the sum of outputs. The difference, if any, is claimed by the block producer as a transaction fee — the economic incentive sustaining network participation in the absence of block reward.<sup>¹⁰</sup></p>
+  <p>Unspent transaction outputs accumulate in the ledger. They are not erased; they are transferred. The complete history of every unit of Pi, from issuance to present state, is verifiable by any node at any time. The ledger conceals nothing.<sup>¹¹</sup></p>
+  <p>Scripts govern the conditions under which outputs may be spent. In their simplest form, they require only a valid signature. More complex constructions are possible, though Pi, in its base protocol, does not implement programmable contract execution. Simplicity is not a limitation. It is a design choice.<sup>¹²</sup></p>
+  <p>A transaction, once confirmed to sufficient depth, is final. There is no appeal. There is no administrator. The mathematics does not negotiate.</p>
+
+  <hr class="fn-rule">
+  <div class="footnotes">
+    <p>⁹ Elliptic curve cryptography over the secp256k1 curve provides 128-bit security with compact key representation. Private keys are 256-bit integers. The probability of collision is negligible by any practical measure.</p>
+    <p>¹⁰ As block subsidy decreases across halving intervals, transaction fees constitute an increasing proportion of miner revenue. This ensures continued participation incentive beyond the final subsidy epoch.</p>
+    <p>¹¹ The UTXO model — Unspent Transaction Output — provides a clean accounting framework in which balance is an emergent property of the ledger, not a stored value.</p>
+    <p>¹² The exclusion of Turing-complete scripting reduces the attack surface of the base protocol. Complexity is the enemy of security.</p>
+  </div>
+</section>
+
+<!-- 4. Proof of Work -->
+<section>
+  <h2>4. Proof of Work</h2>
+  <p>The problem of establishing consensus in an adversarial environment reduces, ultimately, to a single question: at what cost can a participant lie?<sup>¹³</sup></p>
+  <p>In systems governed by identity, the cost of deception is social and legal — contingent upon institutional enforcement. Such systems are only as reliable as the institutions that underpin them.<sup>¹⁴</sup></p>
+  <p>Pi resolves this problem through proof-of-work: a mechanism in which the right to append to the ledger is earned through the expenditure of computational energy. To produce a valid block, a node must find a nonce such that the SHA-256 hash of the block header falls below a target value. This operation cannot be shortcut. It cannot be faked. Energy was spent, or it was not.<sup>¹⁵</sup></p>
+  <p>The expected number of attempts required to produce a valid hash is precisely calibrated by the difficulty parameter. As difficulty increases, the cost of block production increases proportionally. An attacker wishing to rewrite history must expend more energy than the entire honest network — continuously, indefinitely, without guarantee of success.<sup>¹⁶</sup></p>
+  <p class="conclusion-line">This is not trust. This is thermodynamics.<sup>¹⁷</sup></p>
+  <p>The work is real. The energy is real. The cost is real. These properties cannot be simulated, delegated, or appealed. They are the foundation upon which Pi's security rests — not law, not reputation, not authority. Mathematics and physics, nothing more.</p>
+
+  <hr class="fn-rule">
+  <div class="footnotes">
+    <p>¹³ The Byzantine Generals Problem, as formalised by Lamport, Shostak and Pease (1982), establishes that consensus among untrusted parties requires a mechanism for detecting and penalising dishonesty.</p>
+    <p>¹⁴ Historical instances of institutional failure — currency debasement, fractional reserve collapse, sovereign default — illustrate the fragility of trust-dependent consensus.</p>
+    <p>¹⁵ SHA-256, a member of the SHA-2 family, produces a 256-bit digest. No polynomial-time algorithm for preimage attack is known.</p>
+    <p>¹⁶ The probability of a successful 51% attack decreases exponentially as honest hashrate increases. At sufficient network scale, the energy cost of attack exceeds any conceivable economic incentive.</p>
+    <p>¹⁷ Energy expenditure as a basis for consensus was first proposed in Back (2002) and further developed in subsequent peer-to-peer currency proposals.</p>
+  </div>
+</section>
+
+<!-- 5. Supply & Issuance -->
+<section>
+  <h2>5. Supply &amp; Issuance</h2>
+  <p>The total supply of Pi is fixed at 21,000,000 units. This parameter is not a policy decision. It is a protocol constant — enforced by every node, verifiable by any participant, alterable by none.<sup>¹⁸</sup></p>
+  <p>New units enter circulation exclusively through block rewards — a subsidy paid to the node that produces each valid block. The initial subsidy is 50 Pi per block. At every 210,000 blocks — approximately four years — this subsidy is reduced by half. The sequence is deterministic and unalterable.<sup>¹⁹</sup></p>
+  <p>The consequence of this schedule is a supply curve that is fully known in advance. There is no central bank. There is no monetary committee. There is no mechanism by which additional units may be created beyond the protocol's specification. The scarcity of Pi is mathematical, not institutional.<sup>²⁰</sup></p>
+  <p>As the block subsidy approaches zero, transaction fees constitute the entirety of miner revenue. The security of the network therefore does not depend upon perpetual issuance — it depends upon utility. A network that processes transactions of value will attract the fees necessary to sustain participation. A network that does not, will not.<sup>²¹</sup></p>
+  <p>The final Pi will not be mined for approximately one hundred and twenty years. Until then, the protocol issues according to its schedule — indifferent to market conditions, political pressure, or human preference.<sup>²²</sup></p>
+  <p>The supply is known. The schedule is fixed. The mathematics does not make exceptions.</p>
+
+  <hr class="fn-rule">
+  <div class="footnotes">
+    <p>¹⁸ The 21,000,000 unit limit is enforced at the consensus layer. Any node broadcasting a block that violates this parameter will be rejected by the network without exception.</p>
+    <p>¹⁹ The halving schedule produces a geometric series with ratio 1/2. The sum of this series converges to 21,000,000 — a property derivable from first principles.</p>
+    <p>²⁰ Monetary scarcity enforced by protocol differs categorically from scarcity enforced by institutional policy. The former requires no trust in any authority; the latter requires trust in all of them.</p>
+    <p>²¹ The long-term security model of any proof-of-work network is contingent upon sustained transaction demand. This is not a weakness of the design — it is an honest acknowledgement of its conditions.</p>
+    <p>²² Precise exhaustion of block subsidy occurs at block 6,929,999, projected at approximately 2140 under current block interval assumptions.</p>
+  </div>
+</section>
+
+<!-- 6. π -->
+<section>
+  <h2>6. π</h2>
+  <p>The protocol is named Pi. The symbol is π.</p>
+  <p>π is an irrational number — one that cannot be expressed as the ratio of two integers, and whose decimal expansion continues without pattern or termination. It has been computed to trillions of digits. No final digit has been found. None will be.<sup>²³</sup></p>
+  <p>This property is not metaphor. It is mathematics.<sup>²⁴</sup></p>
+  <p>A distributed network, correctly designed, shares a structural kinship with π: it has no centre, no terminus, and no authority capable of defining its limits. Nodes join. Nodes leave. The network continues. The state of the chain extends forward without bound — each block appended to a sequence that began at genesis and has no defined end.<sup>²⁵</sup></p>
+  <p>The supply of Pi is finite. The network is not. These are not contradictions. Gold is finite. The economy built upon it is not.<sup>²⁶</sup></p>
+  <p>We did not choose this name arbitrarily. A number that cannot be fully known, only approached — this is an honest description of any distributed system operating at scale. Certainty is local. The global state is always an approximation.<sup>²⁷</sup></p>
+  <p>The sequence does not end. Neither does the chain.</p>
+
+  <hr class="fn-rule">
+  <div class="footnotes">
+    <p>²³ π was proven irrational by Johann Heinrich Lambert in 1761. It was subsequently proven transcendental by Ferdinand von Lindemann in 1882.</p>
+    <p>²⁴ The use of mathematical constants as naming conventions in technical systems has precedent. The properties of the constant are relevant to the properties of the system.</p>
+    <p>²⁵ The blockchain as an append-only data structure shares formal properties with the decimal expansion of π: both are deterministic given their starting conditions, both extend without bound, and neither admits deletion.</p>
+    <p>²⁶ The distinction between finite supply and infinite utility is fundamental to the economic model of any sound monetary system. Scarcity produces value. Utility sustains it.</p>
+    <p>²⁷ In distributed systems, the CAP theorem establishes that no network can simultaneously guarantee consistency, availability, and partition tolerance. Local certainty is achievable. Global certainty is not.</p>
+  </div>
+</section>
+
+<!-- 7. Conclusion -->
+<section>
+  <h2>7. Conclusion</h2>
+  <p>Pi is not a proposal. It is an implementation.</p>
+  <p>The network exists. The chain has begun. The rules are fixed in code, not in the intentions of any individual or institution. What follows from this point is determined by mathematics and by the participants who choose to engage with it — not by us.<sup>²⁸</sup></p>
+  <p>We make no promises regarding price, adoption, or utility. These are properties that emerge from use, not from declaration. A network is valuable because it is used. It is used because it is trusted. It is trusted because it is verifiable. Verification requires no faith.<sup>²⁹</sup></p>
+  <p>The problems Pi addresses are not new. The concentration of monetary authority, the fragility of trust-dependent systems, the exclusion of participants who lack institutional access — these are conditions that predate any digital network and will outlast any single attempt to address them. Pi is one attempt. Whether it succeeds is not within our power to determine.<sup>³⁰</sup></p>
+  <p>What is within our power is correctness. The protocol is specified here in full. It may be audited, verified, and challenged by any party at any time. We invite scrutiny. We do not ask for belief.<sup>³¹</sup></p>
+  <p>The chain does not require our continued presence to function. It requires only nodes — participants willing to verify, willing to compute, willing to extend the sequence one block further.<sup>³²</sup></p>
+  <p class="conclusion-line">We have stated what Pi is. The rest is mathematics.</p>
+
+  <hr class="fn-rule">
+  <div class="footnotes">
+    <p>²⁸ The decentralisation of protocol governance is a design property, not a rhetorical position. No individual or organisation holds administrative access to the Pi network.</p>
+    <p>²⁹ Value in monetary systems is an emergent social property. It cannot be assigned by the issuer. Historical attempts to do so illustrate the limits of declared value.</p>
+    <p>³⁰ The conditions motivating the development of peer-to-peer currency systems are documented extensively in the literature of monetary history and distributed systems theory.</p>
+    <p>³¹ Full protocol specification is provided in the technical appendix. All parameters are verifiable against the reference implementation.</p>
+    <p>³² Network persistence requires only that the cost of participation remains below the value of the block reward plus transaction fees for at least one honest participant.</p>
+  </div>
+</section>
+
+<!-- Technical Appendix -->
+<section>
+  <h2>Technical Appendix</h2>
+
+  <h2 style="font-size:0.95rem; margin-top:2rem;">A. Protocol Parameters</h2>
+  <p>The following parameters are fixed at the consensus layer and may not be altered by any participant or coalition of participants.</p>
+
+  <div class="param-block">
+    <p>³ Maximum supply: 21,000,000 units. This parameter is enforced at genesis and propagated through every subsequent block.</p>
+    <p>¹ Block interval: 600 seconds. Difficulty recalibrates every 2,016 blocks to maintain this target under variable hashrate conditions.</p>
+    <p>⁴ Initial block subsidy: 50 PI. Halving occurs at block 210,000 intervals. The geometric series converges to the maximum supply asymptotically.</p>
+    <p>¹ Cryptographic primitive: SHA-256 (double round). No preimage attack is known. The security assumption is computationally binding.</p>
+    <p>⁵ Signature scheme: ECDSA over secp256k1. Private keys are 256-bit integers drawn from a cryptographically secure entropy source.</p>
+    <p>⁹ Network identifier: distinguished from all prior proof-of-work networks by genesis block hash. Replay protection is inherent to the chain state.</p>
+    <p>² Minimum transaction output: 1 unit (indivisible at the base layer). Fee market emerges organically from block space scarcity.</p>
+    <p>⁶ Merkle tree structure: binary, SHA-256 double-round at each node. Transaction inclusion proofs are O(log n) in block size.</p>
+    <p>⁵ Script system: non-Turing-complete stack machine. Expressible conditions: pay-to-public-key-hash, multisignature, time-locked outputs.</p>
+    <p>³ Peer discovery: DNS seeding at initialisation, thereafter maintained by the addr message propagation protocol.</p>
+  </div>
+
+  <h2 style="font-size:0.95rem; margin-top:2rem;">B. Verification Parameters</h2>
+  <p>The following integrity verification string is provided for reference implementation validation. Conforming implementations must reproduce this value exactly.</p>
+
+  <p class="checksum-label">Protocol checksum [SHA-256/AES-256-CBC]:</p>
+  <div class="checksum">5b8269d41b22c7351827cd064e8da8b25ff2de42b7cd8fb33be9e4e618c8d9f1</div>
+  <p class="checksum-note">This value encodes protocol state as of genesis. It is not decorative. Its derivation is left as an exercise.</p>
+
+  <h2 style="font-size:0.95rem; margin-top:2rem;">C. Mathematical Constants</h2>
+
+  <div class="param-block">
+    <p>⁵ The ratio of a circle's circumference to its diameter is an irrational transcendental number:<br>
+    <span class="math-const">3.14159265358979323846264338327950288...</span></p>
+    <p>⁸ The natural logarithm base e = <span class="math-const">2.71828182845904523536...</span> appears in the formula e^(iπ) + 1 = 0, which relates the five fundamental constants of mathematics.</p>
+    <p>⁹ The golden ratio φ = <span class="math-const">1.61803398874989484820...</span> emerges from the Fibonacci sequence and appears throughout natural structures.</p>
+    <p>⁷ Lambert (1761) proved π irrational. Lindemann (1882) proved π transcendental. Neither proof requires knowledge of π's decimal expansion.</p>
+    <p>⁹ Archimedes bounded π between 223/71 and 22/7 using inscribed and circumscribed polygons. This was the first rigorous computational approach.</p>
+    <p>³ The digits of π pass all known tests for normality. No pattern has been discovered. No pattern is expected.</p>
+    <p>² The SHA-256 compression function processes 512-bit message blocks. The output is indistinguishable from random under all known attacks.</p>
+    <p>³ AES-256-CBC with a deterministic initialisation vector derived from the key material itself produces a reproducible ciphertext for any fixed plaintext.</p>
+    <p>⁸ The composition of SHA-256 and AES-256 under a shared key schedule derived from an irrational constant is not known to be vulnerable to any algebraic attack.</p>
+    <p>⁴ All parameters in this appendix are deterministic. Given the genesis block, all values are reproducible by any independent implementation.</p>
+    <p>⁶ This document contains no errors. If a value appears anomalous, examine it more carefully.</p>
+  </div>
+</section>
+
+<footer>
+  π — The sequence does not end. Neither does the chain.
+</footer>
+
+</body>
+</html>
