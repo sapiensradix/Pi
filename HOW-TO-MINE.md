@@ -31,15 +31,16 @@ Pi is a peer-to-peer electronic currency. No accounts, no sign-ups. Just downloa
    ```
    ./pi-cli -conf="$HOME/Library/Application Support/Pi/pi.conf" -rpcwallet=pi_wallet getnewaddress
    ```
-   Returns: `pi1q...`
+   Returns: `pi1q...` — copy this address.
 
 6. Start mining:
    ```
    ./pi-cli -rpcclienttimeout=0 \
      -conf="$HOME/Library/Application Support/Pi/pi.conf" \
      -rpcwallet=pi_wallet \
-     generatetoaddress 1 "pi1q..."
+     generatetoaddress 1 "<YOUR_PI_ADDRESS>"
    ```
+   Replace `<YOUR_PI_ADDRESS>` with the address returned in step 5.
 
 ## Linux
 
@@ -47,33 +48,39 @@ Pi is a peer-to-peer electronic currency. No accounts, no sign-ups. Just downloa
 
 2. Make executable:
    ```
-   chmod +x pid-linux pi-cli-linux pi-tx-linux
+   chmod +x pid-linux-new pi-cli-linux-new pi-tx-linux-new
    ```
 
-3. Copy config to `~/.pi/pi.conf` using `pi.conf.example`
+3. Copy config:
+   ```
+   mkdir -p ~/.pi
+   cp pi.conf.example ~/.pi/pi.conf
+   ```
 
 4. Start node:
    ```
-   ./pid-linux -conf="$HOME/.pi/pi.conf" -daemon
+   ./pid-linux-new -conf="$HOME/.pi/pi.conf" -daemon
    ```
 
 5. Create wallet:
    ```
-   ./pi-cli-linux -conf="$HOME/.pi/pi.conf" createwallet "pi_wallet"
+   ./pi-cli-linux-new -conf="$HOME/.pi/pi.conf" createwallet "pi_wallet"
    ```
 
 6. Get address:
    ```
-   ./pi-cli-linux -conf="$HOME/.pi/pi.conf" -rpcwallet=pi_wallet getnewaddress
+   ./pi-cli-linux-new -conf="$HOME/.pi/pi.conf" -rpcwallet=pi_wallet getnewaddress
    ```
+   Returns: `pi1q...` — copy this address.
 
 7. Start mining:
    ```
-   ./pi-cli-linux -rpcclienttimeout=0 \
+   ./pi-cli-linux-new -rpcclienttimeout=0 \
      -conf="$HOME/.pi/pi.conf" \
      -rpcwallet=pi_wallet \
-     generatetoaddress 1 "pi1q..."
+     generatetoaddress 1 "<YOUR_PI_ADDRESS>"
    ```
+   Replace `<YOUR_PI_ADDRESS>` with the address returned in step 6.
 
 ## Windows
 
