@@ -1,44 +1,40 @@
 Getting Started with Pi
 
-Pi is a peer-to-peer electronic currency. No accounts, no sign-ups. Just download, run, and mine.
+Pi is a peer-to-peer electronic currency.
+
+Requirements
+
+- Tor running on 127.0.0.1:9050
 
 macOS
 
-Download Pi-macos.zip from the releases page and unzip it. You'll get these files:
+1. Download Pi-macos-x86_64.zip
+2. Unzip files
+3. Copy config
 
+cp pi.conf.example "$HOME/Library/Application Support/Pi/pi.conf"
 
-pid — the node daemon
-pi — the command-line tool
-pi-wallet — wallet management
-pi.conf.example — sample config
-
-
-Copy the config:
-
-cp pi.conf.example ~/Library/Application\ Support/Pi/pi.conf
-
-Start the node:
+4. Start node
 
 ./pid -conf="$HOME/Library/Application Support/Pi/pi.conf" -daemon
 
-Connect to the network:
+5. Create wallet
 
-./pi -conf="$HOME/Library/Application Support/Pi/pi.conf" addnode 185.248.85.37:31415 add
+./pi-cli -conf="$HOME/Library/Application Support/Pi/pi.conf" createwallet "pi_wallet"
 
-Start mining:
+6. Get address
 
-./pi -conf="$HOME/Library/Application Support/Pi/pi.conf" generatetoaddress 1 $(./pi -conf="$HOME/Library/Application Support/Pi/pi.conf" getnewaddress)
+./pi-cli -conf="$HOME/Library/Application Support/Pi/pi.conf" -rpcwallet=pi_wallet getnewaddress
 
-Linux
+7. Connect to network
 
-Same steps, use Pi-linux.zip. Binaries are named pid-linux, pi-cli-linux, pi-tx-linux.
+./pi-cli -conf="$HOME/Library/Application Support/Pi/pi.conf" addnode x5htnjlwj6ymj4cdj5satcbp77mgqged3dryfnm3npdvcl523thqy5yd.onion:31415 add
 
-Windows
+8. Start mining
 
-Build from source: https://github.com/sapiensradix/Pi
+./pi-cli -rpcclienttimeout=0 -conf="$HOME/Library/Application Support/Pi/pi.conf" -rpcwallet=pi_wallet generatetoaddress 1 <your_address>
 
-Network Nodes
+Note
 
-
-IP: 185.248.85.37:31415
-Tor: x5htnjlwj6ymj4cdj5satcbp77mgqged3dryfnm3npdvcl523thqy5yd.onion:31415
+Mining rewards first appear as immature balance.
+Rewards become spendable after coinbase maturity (100 blocks).
