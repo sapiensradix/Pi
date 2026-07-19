@@ -29,7 +29,11 @@ class ToolWalletTest(BitcoinTestFramework):
         self.skip_if_no_wallet_tool()
 
     def bitcoin_wallet_process(self, *args):
-        binary = self.config["environment"]["BUILDDIR"] + '/src/bitcoin-wallet' + self.config["environment"]["EXEEXT"]
+        binary = os.path.join(
+            self.config["environment"]["BUILDDIR"],
+            'src',
+            self.config["environment"]["WALLET_TOOL_NAME"] + self.config["environment"]["EXEEXT"],
+        )
         default_args = ['-datadir={}'.format(self.nodes[0].datadir), '-chain=%s' % self.chain]
         if not self.options.descriptors and 'create' in args:
             default_args.append('-legacy')

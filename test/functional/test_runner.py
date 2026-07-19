@@ -488,17 +488,35 @@ def main():
         args=passon_args,
         combined_logs_len=args.combinedlogslen,
         failfast=args.failfast,
+        daemon_name=config["environment"]["DAEMON_NAME"],
         use_term_control=args.ansi,
     )
 
-def run_tests(*, test_list, src_dir, build_dir, tmpdir, jobs=1, enable_coverage=False, args=None, combined_logs_len=0, failfast=False, use_term_control):
+def run_tests(
+    *,
+    test_list,
+    src_dir,
+    build_dir,
+    tmpdir,
+    jobs=1,
+    enable_coverage=False,
+    args=None,
+    combined_logs_len=0,
+    failfast=False,
+    daemon_name="bitcoind",
+    use_term_control,
+):
     args = args or []
 
     # Warn if bitcoind is already running
     try:
         # pgrep exits with code zero when one or more matching processes found
-        if subprocess.run(["pgrep", "-x", "bitcoind"], stdout=subprocess.DEVNULL).returncode == 0:
-            print("%sWARNING!%s There is already a bitcoind process running on this system. Tests may fail unexpectedly due to resource contention!" % (BOLD[1], BOLD[0]))
+        if subprocess.run(["pgrep", "-x", daemon_name], stdout=subprocess.DEVNULL).returncode == 0:
+            print(
+                "%sWARNING!%s There is already a %s process running on this system. "
+                "Tests may fail unexpectedly due to resource contention!"
+                % (BOLD[1], BOLD[0], daemon_name)
+            )
     except OSError:
         # pgrep not supported
         pass

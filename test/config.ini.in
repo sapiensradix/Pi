@@ -12,6 +12,11 @@ SRCDIR=@abs_top_srcdir@
 BUILDDIR=@abs_top_builddir@
 EXEEXT=@EXEEXT@
 RPCAUTH=@abs_top_srcdir@/share/rpcauth/rpcauth.py
+DAEMON_NAME=@BITCOIN_DAEMON_NAME@
+CLI_NAME=@BITCOIN_CLI_NAME@
+TX_NAME=@BITCOIN_TX_NAME@
+UTIL_NAME=@BITCOIN_UTIL_NAME@
+WALLET_TOOL_NAME=@BITCOIN_WALLET_TOOL_NAME@
 
 [components]
 # Which components are enabled. These are commented out by `configure` if they were disabled when running config.
