@@ -102,6 +102,7 @@ BASE_SCRIPTS = [
     'p2p_compactblocks_blocksonly.py',
     'feature_segwit.py --legacy-wallet',
     'feature_segwit.py --descriptors',
+    'feature_segwit_activation.py',
     # vv Tests less than 2m vv
     'wallet_basic.py --legacy-wallet',
     'wallet_basic.py --descriptors',
