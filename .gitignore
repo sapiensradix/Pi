@@ -1,4 +1,5 @@
 *.tar.gz
+*.zip
 
 *.exe
 *.pdb
@@ -14,6 +15,15 @@ src/bitcoin-wallet
 src/test/fuzz/fuzz
 src/test/test_bitcoin
 src/qt/test/test_bitcoin-qt
+
+# Pi build outputs
+src/pi
+src/pid
+src/pi-cli
+src/pi-tx
+src/pi-util
+src/pi-wallet
+src/qt/pi-qt
 
 # autoreconf
 Makefile.in
@@ -62,6 +72,8 @@ src/qt/bitcoin-qt.includes
 .*.swp
 *~
 *.bak
+*.backup
+*.before-*
 *.rej
 *.orig
 *.pyc
@@ -94,6 +106,7 @@ Makefile
 !depends/Makefile
 src/qt/bitcoin-qt
 Bitcoin-Qt.app
+Pi.app
 
 # Qt Creator
 Makefile.am.user
@@ -108,9 +121,11 @@ qrc_*.cpp
 # Mac specific
 .DS_Store
 build
+/work/
 
 # Previous releases
 releases
+SHA256SUMS
 
 #lcov
 *.gcno
