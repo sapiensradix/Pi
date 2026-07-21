@@ -25,6 +25,8 @@
 #include <vector>
 
 #include "leveldb/env.h"
+
+#include <thread>
 #include "leveldb/slice.h"
 #include "port/port.h"
 #include "port/thread_annotations.h"
