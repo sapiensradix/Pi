@@ -80,7 +80,7 @@
 // Application startup time (used for uptime calculation)
 const int64_t nStartupTime = GetTime();
 
-const char * const BITCOIN_CONF_FILENAME = "bitcoin.conf";
+const char * const PI_CONF_FILENAME = "pi.conf";
 const char * const BITCOIN_SETTINGS_FILENAME = "settings.json";
 
 ArgsManager gArgs;
@@ -854,14 +854,32 @@ void PrintExceptionContinue(const std::exception* pex, std::string_view thread_n
     tfm::format(std::cerr, "\n\n************************\n%s\n", message);
 }
 
+fs::path GetDefaultDataDirForPlatform(
+    DefaultDataDirPlatform platform,
+    const fs::path& home_path,
+    const fs::path& appdata_path)
+{
+    switch (platform) {
+    case DefaultDataDirPlatform::WINDOWS:
+        return appdata_path / "Pi";
+    case DefaultDataDirPlatform::MACOS:
+        return home_path / "Library/Application Support/Pi";
+    case DefaultDataDirPlatform::UNIX_LIKE:
+        return home_path / ".pi";
+    }
+    assert(false);
+    return {};
+}
+
 fs::path GetDefaultDataDir()
 {
-    // Windows: C:\Users\Username\AppData\Roaming\Bitcoin
-    // macOS: ~/Library/Application Support/Bitcoin
-    // Unix-like: ~/.bitcoin
+    // Windows: C:\Users\Username\AppData\Roaming\Pi
+    // macOS: ~/Library/Application Support/Pi
+    // Unix-like: ~/.pi
 #ifdef WIN32
     // Windows
-    return GetSpecialFolderPath(CSIDL_APPDATA) / "Bitcoin";
+    return GetDefaultDataDirForPlatform(
+        DefaultDataDirPlatform::WINDOWS, {}, GetSpecialFolderPath(CSIDL_APPDATA));
 #else
     fs::path pathRet;
     char* pszHome = getenv("HOME");
@@ -871,10 +889,10 @@ fs::path GetDefaultDataDir()
         pathRet = fs::path(pszHome);
 #ifdef MAC_OSX
     // macOS
-    return pathRet / "Library/Application Support/Pi";
+    return GetDefaultDataDirForPlatform(DefaultDataDirPlatform::MACOS, pathRet);
 #else
     // Unix-like
-    return pathRet / ".bitcoin";
+    return GetDefaultDataDirForPlatform(DefaultDataDirPlatform::UNIX_LIKE, pathRet);
 #endif
 #endif
 }
@@ -971,7 +989,7 @@ bool ArgsManager::ReadConfigFiles(std::string& error, bool ignore_invalid_keys)
         m_config_sections.clear();
     }
 
-    const fs::path conf_path = GetPathArg("-conf", BITCOIN_CONF_FILENAME);
+    const fs::path conf_path = GetPathArg("-conf", PI_CONF_FILENAME);
     std::ifstream stream{GetConfigFile(conf_path)};
 
     // not ok to have a config file specified that cannot be opened

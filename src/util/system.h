@@ -38,7 +38,7 @@ class UniValue;
 // Application startup time (used for uptime calculation)
 int64_t GetStartupTime();
 
-extern const char * const BITCOIN_CONF_FILENAME;
+extern const char * const PI_CONF_FILENAME;
 extern const char * const BITCOIN_SETTINGS_FILENAME;
 
 void SetupEnvironment();
@@ -95,6 +95,18 @@ void ReleaseDirectoryLocks();
 
 bool TryCreateDirectories(const fs::path& p);
 fs::path GetDefaultDataDir();
+
+enum class DefaultDataDirPlatform {
+    WINDOWS,
+    MACOS,
+    UNIX_LIKE,
+};
+
+/** Return the Pi default data directory for a specific platform. */
+fs::path GetDefaultDataDirForPlatform(
+    DefaultDataDirPlatform platform,
+    const fs::path& home_path,
+    const fs::path& appdata_path = {});
 // Return true if -datadir option points to a valid directory or is not specified.
 bool CheckDataDirOption();
 fs::path GetConfigFile(const fs::path& configuration_file_path);

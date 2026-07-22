@@ -30,6 +30,36 @@ BOOST_AUTO_TEST_CASE(dummy)
     BOOST_CHECK(true);
 }
 
+BOOST_AUTO_TEST_CASE(default_datadir_and_config_identity)
+{
+    const fs::path unix_home{"/home/pi-user"};
+    const fs::path macos_home{"/Users/pi-user"};
+    const fs::path windows_appdata{"C:/Users/pi-user/AppData/Roaming"};
+
+    BOOST_CHECK_EQUAL(
+        GetDefaultDataDirForPlatform(DefaultDataDirPlatform::UNIX_LIKE, unix_home),
+        unix_home / ".pi");
+    BOOST_CHECK_EQUAL(
+        GetDefaultDataDirForPlatform(DefaultDataDirPlatform::MACOS, macos_home),
+        macos_home / "Library/Application Support/Pi");
+    BOOST_CHECK_EQUAL(
+        GetDefaultDataDirForPlatform(DefaultDataDirPlatform::WINDOWS, {}, windows_appdata),
+        windows_appdata / "Pi");
+
+    BOOST_CHECK(
+        GetDefaultDataDirForPlatform(DefaultDataDirPlatform::UNIX_LIKE, unix_home) !=
+        unix_home / ".bitcoin");
+    BOOST_CHECK(
+        GetDefaultDataDirForPlatform(DefaultDataDirPlatform::MACOS, macos_home) !=
+        macos_home / "Library/Application Support/Bitcoin");
+    BOOST_CHECK(
+        GetDefaultDataDirForPlatform(DefaultDataDirPlatform::WINDOWS, {}, windows_appdata) !=
+        windows_appdata / "Bitcoin");
+
+    BOOST_CHECK_EQUAL(PI_CONF_FILENAME, "pi.conf");
+    BOOST_CHECK_NE(PI_CONF_FILENAME, "bitcoin.conf");
+}
+
 #ifdef ENABLE_EXTERNAL_SIGNER
 
 BOOST_AUTO_TEST_CASE(run_command)
