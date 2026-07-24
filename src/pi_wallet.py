@@ -1,5 +1,4 @@
 from pathlib import Path
-import subprocess
 #!/usr/bin/env python3
 import tkinter as tk
 from tkinter import messagebox, simpledialog, scrolledtext
@@ -7,6 +6,7 @@ import base64
 from decimal import Decimal, InvalidOperation
 import json
 import os
+import queue
 import socket
 import sys
 import threading
@@ -275,44 +275,112 @@ class PiWallet:
         self.root.resizable(False, False)
         self.mining = False
         self.blocks_mined = 0
+        self.current_address = ""
         self.stop_event = threading.Event()
+        self.mining_thread = None
+        self.balance_thread = None
+        self.closing = False
+        self.workers = set()
+        self.workers_lock = threading.Lock()
+        self.ui_queue = queue.Queue()
+        self.ui_after_id = None
+        self.refresh_after_id = None
+        self.close_after_id = None
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.build_ui()
-        threading.Thread(target=self._init, daemon=True).start()
+        self._drain_ui_queue()
+        self._start_worker(self._init, "wallet-init")
+
+    def _start_worker(self, target, name, *args):
+        if self.closing:
+            return None
+
+        def _run():
+            try:
+                target(*args)
+            finally:
+                with self.workers_lock:
+                    self.workers.discard(threading.current_thread())
+
+        worker = threading.Thread(target=_run, name=name)
+        with self.workers_lock:
+            self.workers.add(worker)
+        worker.start()
+        return worker
+
+    def _queue_ui(self, callback, *args):
+        if not self.closing:
+            self.ui_queue.put((callback, args))
+
+    def _drain_ui_queue(self):
+        if self.closing:
+            return
+        while True:
+            try:
+                callback, args = self.ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            callback(*args)
+        self.ui_after_id = self.root.after(50, self._drain_ui_queue)
+
+    def _set_balance(self, mature, immature):
+        self.balance_var.set(f"Spendable: {mature:.8f} PI")
+        self.blocks_var.set(f"Mining rewards: {immature:.8f} PI")
+
+    def _set_address(self, address):
+        self.current_address = address
+        self.address_var.set(address)
+
+    def _schedule_auto_refresh(self):
+        if not self.closing:
+            self.refresh_after_id = self.root.after(10000, self._auto_refresh)
+
+    def _request_balance_update(self):
+        if self.closing:
+            return
+        if self.balance_thread is not None and self.balance_thread.is_alive():
+            return
+        self.balance_thread = self._start_worker(
+            self._update_balance, "wallet-balance"
+        )
 
     def _init(self):
-        self.status_var.set("Connecting...")
+        self._queue_ui(self.status_var.set, "Connecting...")
         addr = rpc("getnewaddress")
         if addr:
-            self.address_var.set(addr)
-            self.status_var.set("")
+            self._queue_ui(self._set_address, addr)
+            self._queue_ui(self.status_var.set, "")
         else:
-            self.status_var.set(rpc_error("Cannot connect to Pi Core."))
+            error = rpc_error("Cannot connect to Pi Core.")
+            self._queue_ui(self.status_var.set, error)
             return
         info = rpc("getwalletinfo")
         if info:
             mature = info.get("balance", Decimal("0"))
             immature = info.get("immature_balance", Decimal("0"))
-            self.balance_var.set(f"Spendable: {mature:.8f} PI")
-            self.blocks_var.set(f"Mining rewards: {immature:.8f} PI")
+            self._queue_ui(self._set_balance, mature, immature)
         else:
-            self.status_var.set(rpc_error())
-        self.root.after(10000, self._auto_refresh)
+            error = rpc_error()
+            self._queue_ui(self.status_var.set, error)
+        self._queue_ui(self._schedule_auto_refresh)
 
     def _auto_refresh(self):
+        self.refresh_after_id = None
+        if self.closing:
+            return
         if not self.mining:
-            threading.Thread(target=self._update_balance, daemon=True).start()
-        self.root.after(10000, self._auto_refresh)
+            self._request_balance_update()
+        self._schedule_auto_refresh()
 
     def _update_balance(self):
         info = rpc("getwalletinfo")
         if info:
             mature = info.get("balance", Decimal("0"))
             immature = info.get("immature_balance", Decimal("0"))
-            self.balance_var.set(f"Spendable: {mature:.8f} PI")
-            self.blocks_var.set(f"Mining rewards: {immature:.8f} PI")
+            self._queue_ui(self._set_balance, mature, immature)
         else:
-            self.status_var.set(rpc_error())
+            error = rpc_error()
+            self._queue_ui(self.status_var.set, error)
 
     def build_ui(self):
         tk.Label(self.root, text="π", font=("Times New Roman", 80, "bold"), fg="black", bg="white").pack(pady=(20,0))
@@ -385,11 +453,12 @@ class PiWallet:
         def _n():
             a = rpc("getnewaddress")
             if a:
-                self.address_var.set(a)
-                self.status_var.set("New address created!")
+                self._queue_ui(self._set_address, a)
+                self._queue_ui(self.status_var.set, "New address created!")
             else:
-                self.status_var.set(rpc_error("Could not create a new address."))
-        threading.Thread(target=_n, daemon=True).start()
+                error = rpc_error("Could not create a new address.")
+                self._queue_ui(self.status_var.set, error)
+        self._start_worker(_n, "wallet-new-address")
 
     def show_history(self):
         win = tk.Toplevel(self.root)
@@ -413,8 +482,13 @@ class PiWallet:
                     text = "No history found."
             else:
                 text = rpc_error("Could not load wallet history.")
-            win.after(0, lambda: [txt.delete("1.0", "end"), txt.insert("end", text)])
-        threading.Thread(target=_load, daemon=True).start()
+            self._queue_ui(self._replace_history, win, txt, text)
+        self._start_worker(_load, "wallet-history")
+
+    def _replace_history(self, win, txt, text):
+        if win.winfo_exists():
+            txt.delete("1.0", "end")
+            txt.insert("end", text)
 
     def backup_key(self):
         addr = self.address_var.get()
@@ -424,20 +498,24 @@ class PiWallet:
         def _dump():
             key = rpc("dumpprivkey", [addr])
             if key:
-                win = tk.Toplevel(self.root)
-                win.title("Private Key")
-                win.geometry("480x180")
-                win.configure(bg="white")
-                tk.Label(win, text="KEEP SECRET! Anyone with this key owns your PI.", font=("Helvetica", 10, "bold"), fg="red", bg="white").pack(pady=8)
-                entry = tk.Entry(win, font=("Courier", 9), bg="#f0f0f0", relief="flat")
-                entry.pack(pady=4, padx=20, fill="x")
-                entry.insert(0, key)
-                entry.config(state="readonly")
-                tk.Button(win, text="Copy Key", command=lambda: [win.clipboard_clear(), win.clipboard_append(key)],
-                    font=("Helvetica", 10, "bold"), fg="white", bg="#111111", relief="flat", padx=12, pady=5).pack()
+                self._queue_ui(self._show_private_key, key)
             else:
-                messagebox.showerror("Backup", rpc_error("Could not export key."))
-        threading.Thread(target=_dump, daemon=True).start()
+                error = rpc_error("Could not export key.")
+                self._queue_ui(messagebox.showerror, "Backup", error)
+        self._start_worker(_dump, "wallet-backup")
+
+    def _show_private_key(self, key):
+        win = tk.Toplevel(self.root)
+        win.title("Private Key")
+        win.geometry("480x180")
+        win.configure(bg="white")
+        tk.Label(win, text="KEEP SECRET! Anyone with this key owns your PI.", font=("Helvetica", 10, "bold"), fg="red", bg="white").pack(pady=8)
+        entry = tk.Entry(win, font=("Courier", 9), bg="#f0f0f0", relief="flat")
+        entry.pack(pady=4, padx=20, fill="x")
+        entry.insert(0, key)
+        entry.config(state="readonly")
+        tk.Button(win, text="Copy Key", command=lambda: [win.clipboard_clear(), win.clipboard_append(key)],
+            font=("Helvetica", 10, "bold"), fg="white", bg="#111111", relief="flat", padx=12, pady=5).pack()
 
     def import_key(self):
         key = self.import_var.get().strip()
@@ -446,16 +524,17 @@ class PiWallet:
             return
         if not messagebox.askyesno("Import", "Import this private key?"):
             return
+        self.status_var.set("Importing...")
         def _imp():
-            self.status_var.set("Importing...")
             success, _ = rpc_with_status("importprivkey", [key, "", True])
             if success:
-                self.status_var.set("Import successful!")
-                self.import_var.set("")
-                threading.Thread(target=self._update_balance, daemon=True).start()
+                self._queue_ui(self.status_var.set, "Import successful!")
+                self._queue_ui(self.import_var.set, "")
+                self._queue_ui(self._request_balance_update)
             else:
-                self.status_var.set(rpc_error("Import failed."))
-        threading.Thread(target=_imp, daemon=True).start()
+                error = rpc_error("Import failed.")
+                self._queue_ui(self.status_var.set, error)
+        self._start_worker(_imp, "wallet-import")
 
     def send_pi(self):
         addr = self.send_addr_var.get().strip()
@@ -473,71 +552,98 @@ class PiWallet:
         if messagebox.askyesno("Confirm", f"Send {amt} PI to\n{addr}?"):
             def _s():
                 success, _ = rpc_with_status("sendtoaddress", [addr, amount])
-                self.status_var.set("Sent!" if success else rpc_error("Send failed."))
                 if success:
-                    self.send_addr_var.set("")
-                    self.send_amt_var.set("")
-                    threading.Thread(target=self._update_balance, daemon=True).start()
-            threading.Thread(target=_s, daemon=True).start()
+                    self._queue_ui(self.status_var.set, "Sent!")
+                    self._queue_ui(self.send_addr_var.set, "")
+                    self._queue_ui(self.send_amt_var.set, "")
+                    self._queue_ui(self._request_balance_update)
+                else:
+                    error = rpc_error("Send failed.")
+                    self._queue_ui(self.status_var.set, error)
+            self._start_worker(_s, "wallet-send")
 
     def toggle_mine(self):
         if not self.mining:
+            if self.mining_thread is not None and self.mining_thread.is_alive():
+                return
             self.mining = True
-            self.stop_event.clear()
+            self.stop_event = threading.Event()
             self.mine_btn.config(text="⏹  Stop Mining", bg="#333333")
             self.status_var.set("Mining...")
-            threading.Thread(target=self._mine_loop, daemon=True).start()
+            self.mining_thread = self._start_worker(
+                self._mine_loop, "wallet-miner", self.stop_event
+            )
         else:
             self.mining = False
             self.stop_event.set()
-            self.mine_btn.config(text="⛏  Start Mining", bg="#111111")
-            self.status_var.set("Mining stopped.")
-            threading.Thread(target=self._update_balance, daemon=True).start()
+            self.mine_btn.config(
+                text="Stopping mining...", bg="#333333", state="disabled"
+            )
+            self.status_var.set("Stopping mining...")
 
-    def _mine_loop(self):
-        while self.mining and not self.stop_event.is_set():
-            addr = self.address_var.get()
-            if addr and addr != "Connecting...":
-                result = rpc("generatetoaddress", [1, addr])
-                if self.stop_event.is_set():
-                    break
-                if result:
-                    self.blocks_mined += 1
-                    self.blocks_var.set(f"Blocks mined this session: {self.blocks_mined}")
-                    info = rpc("getwalletinfo")
-                    if info:
-                        mature = float(info.get("balance", 0))
-                        immature = float(info.get("immature_balance", 0))
-                        self.balance_var.set(f"Spendable: {mature:.8f} PI")
-                        self.blocks_var.set(f"Mining rewards: {immature:.8f} PI")
-                    self.status_var.set(f"Block {self.blocks_mined} mined! +50 PI")
-                time.sleep(1)
-
-
-    def force_restart_node(self):
-        """Stop stuck mining RPC by killing pid, then restart clean node."""
+    def _mine_loop(self, stop_event):
         try:
-            subprocess.run(["pkill", "pid"], timeout=3)
-        except Exception:
-            pass
+            while not stop_event.is_set():
+                addr = self.current_address
+                if addr and addr != "Connecting...":
+                    result = rpc("generatetoaddress", [1, addr])
+                    if stop_event.is_set():
+                        break
+                    if result:
+                        self.blocks_mined += 1
+                        self._queue_ui(
+                            self.blocks_var.set,
+                            f"Blocks mined this session: {self.blocks_mined}",
+                        )
+                        info = rpc("getwalletinfo")
+                        if info:
+                            mature = float(info.get("balance", 0))
+                            immature = float(info.get("immature_balance", 0))
+                            self._queue_ui(self._set_balance, mature, immature)
+                        self._queue_ui(
+                            self.status_var.set,
+                            f"Block {self.blocks_mined} mined! +50 PI",
+                        )
+                    time.sleep(1)
+        finally:
+            self._queue_ui(self._mining_finished, stop_event)
 
-        time.sleep(2)
-
-        try:
-            subprocess.Popen([
-                "./pid",
-                f"-conf={str(Path.home() / 'Library/Application Support/Pi/pi.conf')}",
-                "-daemon"
-            ], cwd=str(Path.home() / "pi/src"))
-        except Exception as e:
-            print("restart node failed:", e)
+    def _mining_finished(self, stop_event):
+        if stop_event is not self.stop_event:
+            return
+        self.mining = False
+        self.mining_thread = None
+        self.mine_btn.config(
+            text="⛏  Start Mining", bg="#111111", state="normal"
+        )
+        self.status_var.set("Mining stopped.")
+        self._request_balance_update()
 
     def on_close(self):
+        if self.closing:
+            return
         if self.mining:
             if not messagebox.askokcancel("Quit", "Mining is running. Stop and close?"):
                 return
+        self.closing = True
         self.mining = False
         self.stop_event.set()
+        self.mine_btn.config(state="disabled")
+        self.status_var.set("Closing...")
+        for after_id in (self.ui_after_id, self.refresh_after_id):
+            if after_id is not None:
+                try:
+                    self.root.after_cancel(after_id)
+                except tk.TclError:
+                    pass
+        self._wait_for_workers()
+
+    def _wait_for_workers(self):
+        with self.workers_lock:
+            active = any(worker.is_alive() for worker in self.workers)
+        if active:
+            self.close_after_id = self.root.after(50, self._wait_for_workers)
+            return
         self.root.destroy()
 
 if __name__ == "__main__":
