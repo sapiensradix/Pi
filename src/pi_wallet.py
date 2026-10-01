@@ -13,12 +13,14 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 RPC_TIMEOUT = 10
 DAEMON_START_TIMEOUT = 30
 DAEMON_SHUTDOWN_TIMEOUT = 30
 DAEMON_POLL_INTERVAL = 0.25
+DEFAULT_WALLET_NAME = "pi_wallet"
 
 
 def default_pi_datadir(platform=None, environ=None, home=None):
@@ -180,7 +182,7 @@ def _parse_rpc_response(raw, method, secrets):
     return response["result"]
 
 
-def _rpc_request(method, params=None):
+def _rpc_request(method, params=None, wallet=None):
     try:
         conf = read_conf()
     except OSError as exc:
@@ -188,6 +190,9 @@ def _rpc_request(method, params=None):
     port = _rpc_port(conf)
 
     url = f"http://127.0.0.1:{port}"
+    if wallet is not None:
+        wallet_path = urllib.parse.quote(str(wallet), safe="")
+        url = f"{url}/wallet/{wallet_path}"
     payload = json.dumps(
         {
             "jsonrpc": "1.0",
@@ -265,9 +270,9 @@ def _rpc_request(method, params=None):
     raise PiRPCError("Pi Core RPC authentication failed.", kind="auth")
 
 
-def rpc_with_status(method, params=None):
+def rpc_with_status(method, params=None, wallet=None):
     try:
-        result = _rpc_request(method, params)
+        result = _rpc_request(method, params, wallet=wallet)
     except PiRPCError as exc:
         _RPC_STATE.error = str(exc)
         return False, None
@@ -275,8 +280,8 @@ def rpc_with_status(method, params=None):
     return True, result
 
 
-def rpc(method, params=None):
-    success, result = rpc_with_status(method, params)
+def rpc(method, params=None, wallet=None):
+    success, result = rpc_with_status(method, params, wallet=wallet)
     return result if success else None
 
 
@@ -511,6 +516,7 @@ class PiWallet:
         self.mining = False
         self.blocks_mined = 0
         self.current_address = ""
+        self.active_wallet = None
         self.stop_event = threading.Event()
         self.mining_thread = None
         self.balance_thread = None
@@ -611,14 +617,19 @@ class PiWallet:
 
     def _init(self):
         self._queue_ui(self.status_var.set, "Connecting...")
-        addr = rpc("getnewaddress")
+        try:
+            self.active_wallet = self._ensure_wallet()
+        except PiRPCError as exc:
+            self._queue_ui(self.status_var.set, str(exc))
+            return
+        addr = self._wallet_rpc("getnewaddress")
         if addr:
             self._queue_ui(self._set_address, addr)
         else:
             error = rpc_error("Cannot connect to Pi Core.")
             self._queue_ui(self.status_var.set, error)
             return
-        info = rpc("getwalletinfo")
+        info = self._wallet_rpc("getwalletinfo")
         if info:
             mature = info.get("balance", Decimal("0"))
             immature = info.get("immature_balance", Decimal("0"))
@@ -631,6 +642,36 @@ class PiWallet:
         self._queue_ui(self.status_var.set, "")
         self._queue_ui(self._schedule_auto_refresh)
 
+    def _ensure_wallet(self):
+        loaded = _rpc_request("listwallets")
+        if not isinstance(loaded, list):
+            raise PiRPCError("Pi Core returned an invalid wallet list.")
+        if DEFAULT_WALLET_NAME in loaded:
+            return DEFAULT_WALLET_NAME
+
+        wallet_dir = _rpc_request("listwalletdir")
+        entries = wallet_dir.get("wallets", []) if isinstance(wallet_dir, dict) else []
+        wallet_names = {
+            entry.get("name")
+            for entry in entries
+            if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+        }
+        if DEFAULT_WALLET_NAME in wallet_names:
+            _rpc_request("loadwallet", [DEFAULT_WALLET_NAME])
+        else:
+            _rpc_request("createwallet", [DEFAULT_WALLET_NAME])
+
+        loaded = _rpc_request("listwallets")
+        if DEFAULT_WALLET_NAME not in loaded:
+            raise PiRPCError("Pi Core did not load the default Pi wallet.")
+        return DEFAULT_WALLET_NAME
+
+    def _wallet_rpc(self, method, params=None):
+        return rpc(method, params, wallet=self.active_wallet)
+
+    def _wallet_rpc_with_status(self, method, params=None):
+        return rpc_with_status(method, params, wallet=self.active_wallet)
+
     def _auto_refresh(self):
         self.refresh_after_id = None
         if self.closing:
@@ -640,7 +681,7 @@ class PiWallet:
         self._schedule_auto_refresh()
 
     def _update_balance(self):
-        info = rpc("getwalletinfo")
+        info = self._wallet_rpc("getwalletinfo")
         if info:
             mature = info.get("balance", Decimal("0"))
             immature = info.get("immature_balance", Decimal("0"))
@@ -740,7 +781,7 @@ class PiWallet:
         if not messagebox.askyesno("New Address", "Create a new address?\nYour old address still works."):
             return
         def _n():
-            a = rpc("getnewaddress")
+            a = self._wallet_rpc("getnewaddress")
             if a:
                 self._queue_ui(self._set_address, a)
                 self._queue_ui(self.status_var.set, "New address created!")
@@ -759,7 +800,7 @@ class PiWallet:
         txt.pack(fill="both", expand=True, padx=20, pady=10)
         txt.insert("end", "Loading...\n")
         def _load():
-            result = rpc("listreceivedbyaddress", [0, True])
+            result = self._wallet_rpc("listreceivedbyaddress", [0, True])
             text = ""
             if isinstance(result, list):
                 for item in result:
@@ -785,7 +826,7 @@ class PiWallet:
             messagebox.showwarning("Backup", "No address loaded yet.")
             return
         def _dump():
-            key = rpc("dumpprivkey", [addr])
+            key = self._wallet_rpc("dumpprivkey", [addr])
             if key:
                 self._queue_ui(self._show_private_key, key)
             else:
@@ -815,7 +856,9 @@ class PiWallet:
             return
         self.status_var.set("Importing...")
         def _imp():
-            success, _ = rpc_with_status("importprivkey", [key, "", True])
+            success, _ = self._wallet_rpc_with_status(
+                "importprivkey", [key, "", True]
+            )
             if success:
                 self._queue_ui(self.status_var.set, "Import successful!")
                 self._queue_ui(self.import_var.set, "")
@@ -840,7 +883,9 @@ class PiWallet:
             return
         if messagebox.askyesno("Confirm", f"Send {amt} PI to\n{addr}?"):
             def _s():
-                success, _ = rpc_with_status("sendtoaddress", [addr, amount])
+                success, _ = self._wallet_rpc_with_status(
+                    "sendtoaddress", [addr, amount]
+                )
                 if success:
                     self._queue_ui(self.status_var.set, "Sent!")
                     self._queue_ui(self.send_addr_var.set, "")
@@ -875,7 +920,7 @@ class PiWallet:
             while not stop_event.is_set():
                 addr = self.current_address
                 if addr and addr != "Connecting...":
-                    result = rpc("generatetoaddress", [1, addr])
+                    result = self._wallet_rpc("generatetoaddress", [1, addr])
                     if stop_event.is_set():
                         break
                     if result:
@@ -884,7 +929,7 @@ class PiWallet:
                             self.blocks_var.set,
                             f"Blocks mined this session: {self.blocks_mined}",
                         )
-                        info = rpc("getwalletinfo")
+                        info = self._wallet_rpc("getwalletinfo")
                         if info:
                             mature = float(info.get("balance", 0))
                             immature = float(info.get("immature_balance", 0))

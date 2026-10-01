@@ -87,6 +87,21 @@ class PiWalletRPCTest(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(result, 17)
 
+    def test_wallet_rpc_uses_encoded_wallet_endpoint(self):
+        def urlopen(request, timeout):
+            self.assertEqual(
+                request.full_url,
+                "http://127.0.0.1:8332/wallet/pi%20wallet",
+            )
+            return self.response(result={"walletname": "pi wallet"})
+
+        with patch.object(pi_wallet.urllib.request, "urlopen", side_effect=urlopen):
+            success, result = pi_wallet.rpc_with_status(
+                "getwalletinfo", wallet="pi wallet"
+            )
+        self.assertTrue(success)
+        self.assertEqual(result["walletname"], "pi wallet")
+
     def test_config_credentials_fallback_when_cookie_is_missing(self):
         self.cookie.unlink()
         pi_wallet.CONF_PATH.write_text(
