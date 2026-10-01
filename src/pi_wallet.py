@@ -1,5 +1,5 @@
-from pathlib import Path
 #!/usr/bin/env python3
+from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, simpledialog, scrolledtext
 import base64
@@ -20,6 +20,8 @@ RPC_TIMEOUT = 10
 DAEMON_START_TIMEOUT = 30
 DAEMON_SHUTDOWN_TIMEOUT = 30
 DAEMON_POLL_INTERVAL = 0.25
+MINING_MAX_TRIES = 1_000_000
+MINING_RETRY_DELAY = 0.05
 DEFAULT_WALLET_NAME = "pi_wallet"
 
 
@@ -920,7 +922,10 @@ class PiWallet:
             while not stop_event.is_set():
                 addr = self.current_address
                 if addr and addr != "Connecting...":
-                    result = self._wallet_rpc("generatetoaddress", [1, addr])
+                    result = self._wallet_rpc(
+                        "generatetoaddress",
+                        [1, addr, MINING_MAX_TRIES],
+                    )
                     if stop_event.is_set():
                         break
                     if result:
@@ -938,7 +943,8 @@ class PiWallet:
                             self.status_var.set,
                             f"Block {self.blocks_mined} mined! +50 PI",
                         )
-                    time.sleep(1)
+                    if stop_event.wait(MINING_RETRY_DELAY):
+                        break
         finally:
             self._queue_ui(self._mining_finished, stop_event)
 
