@@ -522,6 +522,8 @@ class PiWallet:
         self.stop_event = threading.Event()
         self.mining_thread = None
         self.balance_thread = None
+        self.readiness_thread = None
+        self.mining_ready = False
         self.closing = False
         self.workers = set()
         self.workers_lock = threading.Lock()
@@ -585,6 +587,14 @@ class PiWallet:
         for widget in self.daemon_dependent_widgets:
             widget.config(state=state)
 
+    def _wallet_ready(self):
+        self._set_daemon_controls_enabled(True)
+        self.mining_ready = False
+        self.mine_btn.config(state="disabled")
+        self.status_var.set("Checking Pi network...")
+        self._request_mining_readiness()
+        self._schedule_auto_refresh()
+
     def _initialize_daemon(self):
         self._queue_ui(self.status_var.set, "Connecting to Pi Core...")
         try:
@@ -640,9 +650,7 @@ class PiWallet:
             error = rpc_error()
             self._queue_ui(self.status_var.set, error)
             return
-        self._queue_ui(self._set_daemon_controls_enabled, True)
-        self._queue_ui(self.status_var.set, "")
-        self._queue_ui(self._schedule_auto_refresh)
+        self._queue_ui(self._wallet_ready)
 
     def _ensure_wallet(self):
         loaded = _rpc_request("listwallets")
@@ -680,7 +688,57 @@ class PiWallet:
             return
         if not self.mining:
             self._request_balance_update()
+        self._request_mining_readiness()
         self._schedule_auto_refresh()
+
+    def _request_mining_readiness(self):
+        if self.closing:
+            return
+        if self.readiness_thread is not None and self.readiness_thread.is_alive():
+            return
+        self.readiness_thread = self._start_worker(
+            self._check_mining_readiness, "mining-readiness"
+        )
+
+    def _check_mining_readiness(self):
+        try:
+            peer_count = int(_rpc_request("getconnectioncount"))
+            chain_info = _rpc_request("getblockchaininfo")
+            blocks = int(chain_info.get("blocks", 0))
+            headers = int(chain_info.get("headers", 0))
+            progress = float(chain_info.get("verificationprogress", 0))
+        except (PiRPCError, TypeError, ValueError):
+            self._queue_ui(
+                self._apply_mining_readiness,
+                False,
+                "Cannot verify Pi network readiness.",
+            )
+            return
+
+        if peer_count < 1:
+            ready = False
+            message = "Waiting for a Tor peer before mining..."
+        elif blocks < headers or progress < 0.999999:
+            ready = False
+            message = f"Synchronizing Pi blockchain: {blocks}/{headers} blocks"
+        else:
+            ready = True
+            message = ""
+        self._queue_ui(self._apply_mining_readiness, ready, message)
+
+    def _apply_mining_readiness(self, ready, message):
+        if self.closing:
+            return
+        self.mining_ready = ready
+        if self.mining:
+            if not ready:
+                self.mining = False
+                self.stop_event.set()
+                self.mine_btn.config(state="disabled")
+                self.status_var.set(message)
+            return
+        self.mine_btn.config(state="normal" if ready else "disabled")
+        self.status_var.set(message)
 
     def _update_balance(self):
         info = self._wallet_rpc("getwalletinfo")
@@ -900,6 +958,9 @@ class PiWallet:
 
     def toggle_mine(self):
         if not self.mining:
+            if not self.mining_ready:
+                self.status_var.set("Pi must be connected and synchronized before mining.")
+                return
             if self.mining_thread is not None and self.mining_thread.is_alive():
                 return
             self.mining = True
@@ -954,10 +1015,11 @@ class PiWallet:
         self.mining = False
         self.mining_thread = None
         self.mine_btn.config(
-            text="⛏  Start Mining", bg="#111111", state="normal"
+            text="⛏  Start Mining", bg="#111111", state="disabled"
         )
         self.status_var.set("Mining stopped.")
         self._request_balance_update()
+        self._request_mining_readiness()
 
     def on_close(self):
         if self.closing or self.close_requested:
