@@ -8,6 +8,7 @@ import json
 import os
 import queue
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -15,6 +16,9 @@ import urllib.error
 import urllib.request
 
 RPC_TIMEOUT = 10
+DAEMON_START_TIMEOUT = 30
+DAEMON_SHUTDOWN_TIMEOUT = 30
+DAEMON_POLL_INTERVAL = 0.25
 
 
 def default_pi_datadir(platform=None, environ=None, home=None):
@@ -34,7 +38,7 @@ def default_pi_datadir(platform=None, environ=None, home=None):
 DATADIR = default_pi_datadir()
 CONF_PATH = DATADIR / "pi.conf"
 DIR = os.path.dirname(os.path.abspath(__file__))
-PI_BIN = os.path.join(DIR, "pi")
+PID_BIN = os.path.join(DIR, "pid")
 _RPC_STATE = threading.local()
 
 
@@ -60,6 +64,24 @@ def read_conf(path=None):
     except FileNotFoundError:
         pass
     return conf
+
+
+def _rpc_port(conf):
+    try:
+        port = int(conf.get("rpcport", "8332"))
+    except (TypeError, ValueError) as exc:
+        raise PiRPCError("pi.conf contains an invalid rpcport.", kind="config") from exc
+    if not 1 <= port <= 65535:
+        raise PiRPCError("pi.conf contains an invalid rpcport.", kind="config")
+    return port
+
+
+def _loopback_rpc_listener(port):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            return True
+    except OSError:
+        return False
 
 
 def _cookie_path(conf):
@@ -163,12 +185,7 @@ def _rpc_request(method, params=None):
         conf = read_conf()
     except OSError as exc:
         raise PiRPCError("pi.conf cannot be read.", kind="config") from exc
-    try:
-        port = int(conf.get("rpcport", "8332"))
-    except (TypeError, ValueError) as exc:
-        raise PiRPCError("pi.conf contains an invalid rpcport.", kind="config") from exc
-    if not 1 <= port <= 65535:
-        raise PiRPCError("pi.conf contains an invalid rpcport.", kind="config")
+    port = _rpc_port(conf)
 
     url = f"http://127.0.0.1:{port}"
     payload = json.dumps(
@@ -266,6 +283,224 @@ def rpc(method, params=None):
 def rpc_error(default="Pi Core RPC request failed."):
     return getattr(_RPC_STATE, "error", "") or default
 
+
+class DaemonController:
+    def __init__(self, daemon_path=None, datadir=None, conf_path=None):
+        self.daemon_path = Path(PID_BIN if daemon_path is None else daemon_path)
+        self.datadir = Path(DATADIR if datadir is None else datadir)
+        self.conf_path = Path(CONF_PATH if conf_path is None else conf_path)
+        self.startup_log_path = self.datadir / "pi-wallet-daemon.log"
+        self.process = None
+        self.ownership = "none"
+        self.last_error = ""
+        self.cancel_event = threading.Event()
+
+    def _validate_identity(self):
+        network_info = _rpc_request("getnetworkinfo")
+        subversion = network_info.get("subversion") if isinstance(network_info, dict) else None
+        if not isinstance(subversion, str) or not subversion.startswith("/Pi:"):
+            raise PiRPCError(
+                "The RPC service is not a recognized Pi Core daemon.",
+                kind="identity",
+            )
+
+        chain_info = _rpc_request("getblockchaininfo")
+        chain = chain_info.get("chain") if isinstance(chain_info, dict) else None
+        if chain != "main":
+            raise PiRPCError(
+                f"Pi Wallet requires mainnet, but the daemon is using {chain or 'an unknown chain'}.",
+                kind="identity",
+            )
+        return chain_info
+
+    def _credentials_available(self):
+        try:
+            conf = read_conf(self.conf_path)
+        except OSError:
+            return False
+        if _cookie_path(conf).is_file():
+            return True
+        return bool(conf.get("rpcuser") and conf.get("rpcpassword"))
+
+    def _retryable_startup_error(self, error):
+        if error.code == -28 or error.kind in ("connection", "timeout"):
+            return True
+        return error.kind == "auth" and not self._credentials_available()
+
+    def _wait_for_rpc(self, deadline):
+        last_error = None
+        while time.monotonic() < deadline:
+            if self.cancel_event.is_set():
+                raise PiRPCError("Pi Core startup was cancelled.", kind="cancelled")
+
+            try:
+                chain_info = self._validate_identity()
+                if self.process is not None and self.process.poll() is None:
+                    self.ownership = "managed"
+                else:
+                    self.process = None
+                    self.ownership = "external"
+                self.last_error = ""
+                return chain_info
+            except PiRPCError as exc:
+                last_error = exc
+                if not self._retryable_startup_error(exc):
+                    raise
+
+            if self.process is not None and self.process.poll() is not None:
+                self.process = None
+                self.ownership = "none"
+            time.sleep(DAEMON_POLL_INTERVAL)
+
+        if last_error is not None:
+            raise PiRPCError(
+                f"Pi Core did not become ready before the startup deadline: {last_error}",
+                kind="startup",
+            ) from last_error
+        raise PiRPCError(
+            "Pi Core did not become ready before the startup deadline.",
+            kind="startup",
+        )
+
+    def _start_managed(self):
+        if self.process is not None:
+            raise PiRPCError("Pi Core startup has already been attempted.", kind="startup")
+        if not self.daemon_path.is_file() or not os.access(self.daemon_path, os.X_OK):
+            raise PiRPCError(
+                f"Pi Core daemon was not found at {self.daemon_path}.",
+                kind="startup",
+            )
+
+        try:
+            self.datadir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise PiRPCError(
+                "The Pi data directory could not be created.",
+                kind="startup",
+            ) from exc
+
+        command = [
+            str(self.daemon_path),
+            f"-datadir={self.datadir}",
+            "-daemon=0",
+        ]
+        if self.conf_path.is_file():
+            command.append(f"-conf={self.conf_path}")
+
+        try:
+            startup_log = self.startup_log_path.open("ab")
+        except OSError as exc:
+            raise PiRPCError(
+                f"Pi Core startup log could not be opened at {self.startup_log_path}.",
+                kind="startup",
+            ) from exc
+        try:
+            try:
+                self.process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=startup_log,
+                    stderr=subprocess.STDOUT,
+                )
+            except OSError as exc:
+                self.process = None
+                raise PiRPCError(
+                    "Pi Core daemon could not be started.",
+                    kind="startup",
+                ) from exc
+        finally:
+            startup_log.close()
+        self.ownership = "managed"
+
+    def _terminate_started_child(self):
+        process = self.process
+        if process is None:
+            return
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=DAEMON_SHUTDOWN_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=DAEMON_SHUTDOWN_TIMEOUT)
+        self.process = None
+        self.ownership = "none"
+
+    def attach_or_start(self):
+        self.cancel_event.clear()
+        try:
+            chain_info = self._validate_identity()
+        except PiRPCError as first_error:
+            try:
+                conf = read_conf(self.conf_path)
+                port = _rpc_port(conf)
+            except OSError as exc:
+                raise PiRPCError("pi.conf cannot be read.", kind="config") from exc
+
+            if _loopback_rpc_listener(port):
+                if not self._retryable_startup_error(first_error):
+                    self.last_error = str(first_error)
+                    raise
+                chain_info = self._wait_for_rpc(
+                    time.monotonic() + DAEMON_START_TIMEOUT
+                )
+            else:
+                self._start_managed()
+                try:
+                    chain_info = self._wait_for_rpc(
+                        time.monotonic() + DAEMON_START_TIMEOUT
+                    )
+                except PiRPCError:
+                    self._terminate_started_child()
+                    raise
+        else:
+            self.process = None
+            self.ownership = "external"
+            self.last_error = ""
+        return chain_info
+
+    def cancel(self):
+        self.cancel_event.set()
+
+    def is_syncing(self):
+        try:
+            chain_info = _rpc_request("getblockchaininfo")
+        except PiRPCError:
+            return None
+        return bool(chain_info.get("initialblockdownload", False))
+
+    def shutdown_managed(self):
+        process = self.process
+        if self.ownership != "managed" or process is None:
+            return "external"
+        if process.poll() is not None:
+            self.process = None
+            self.ownership = "none"
+            return "exited"
+
+        try:
+            _rpc_request("stop")
+        except PiRPCError as exc:
+            self.last_error = str(exc)
+
+        result = "graceful"
+        try:
+            process.wait(timeout=DAEMON_SHUTDOWN_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            result = "terminated"
+            process.terminate()
+            try:
+                process.wait(timeout=DAEMON_SHUTDOWN_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                result = "killed"
+                process.kill()
+                process.wait(timeout=DAEMON_SHUTDOWN_TIMEOUT)
+        finally:
+            self.process = None
+            self.ownership = "none"
+        return result
+
+
 class PiWallet:
     def __init__(self, root):
         self.root = root
@@ -286,10 +521,15 @@ class PiWallet:
         self.ui_after_id = None
         self.refresh_after_id = None
         self.close_after_id = None
+        self.close_requested = False
+        self.daemon_controller = DaemonController()
+        self.daemon_dependent_widgets = []
+        self.daemon_shutdown_started = False
+        self.daemon_shutdown_thread = None
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.build_ui()
         self._drain_ui_queue()
-        self._start_worker(self._init, "wallet-init")
+        self._start_worker(self._initialize_daemon, "daemon-init")
 
     def _start_worker(self, target, name, *args):
         if self.closing:
@@ -321,7 +561,8 @@ class PiWallet:
             except queue.Empty:
                 break
             callback(*args)
-        self.ui_after_id = self.root.after(50, self._drain_ui_queue)
+        if not self.closing:
+            self.ui_after_id = self.root.after(50, self._drain_ui_queue)
 
     def _set_balance(self, mature, immature):
         self.balance_var.set(f"Spendable: {mature:.8f} PI")
@@ -330,6 +571,30 @@ class PiWallet:
     def _set_address(self, address):
         self.current_address = address
         self.address_var.set(address)
+
+    def _set_daemon_controls_enabled(self, enabled):
+        state = "normal" if enabled else "disabled"
+        for widget in self.daemon_dependent_widgets:
+            widget.config(state=state)
+
+    def _initialize_daemon(self):
+        self._queue_ui(self.status_var.set, "Connecting to Pi Core...")
+        try:
+            self.daemon_controller.attach_or_start()
+        except PiRPCError as exc:
+            if not self.closing:
+                self._queue_ui(self._daemon_failed, str(exc))
+            return
+        self._queue_ui(self._daemon_ready)
+
+    def _daemon_ready(self):
+        if self.closing:
+            return
+        self._start_worker(self._init, "wallet-init")
+
+    def _daemon_failed(self, message):
+        self._set_daemon_controls_enabled(False)
+        self.status_var.set(message)
 
     def _schedule_auto_refresh(self):
         if not self.closing:
@@ -349,7 +614,6 @@ class PiWallet:
         addr = rpc("getnewaddress")
         if addr:
             self._queue_ui(self._set_address, addr)
-            self._queue_ui(self.status_var.set, "")
         else:
             error = rpc_error("Cannot connect to Pi Core.")
             self._queue_ui(self.status_var.set, error)
@@ -362,6 +626,9 @@ class PiWallet:
         else:
             error = rpc_error()
             self._queue_ui(self.status_var.set, error)
+            return
+        self._queue_ui(self._set_daemon_controls_enabled, True)
+        self._queue_ui(self.status_var.set, "")
         self._queue_ui(self._schedule_auto_refresh)
 
     def _auto_refresh(self):
@@ -404,10 +671,14 @@ class PiWallet:
         tk.Entry(af, textvariable=self.address_var, font=("Courier", 9), fg="#111111", bg="#f0f0f0", relief="flat", bd=1, state="readonly").pack(fill="x", pady=4, ipady=6)
         bf2 = tk.Frame(af, bg="white")
         bf2.pack(fill="x")
-        tk.Button(bf2, text="Copy", command=self.copy_address, font=("Helvetica", 10, "bold"), fg="white", bg="#111111", relief="flat", cursor="hand2", padx=12, pady=5).pack(side="left")
-        tk.Button(bf2, text="New Address", command=self.new_address, font=("Helvetica", 10, "bold"), fg="#111111", bg="white", relief="solid", bd=2, cursor="hand2", padx=12, pady=5).pack(side="left", padx=(8,0))
-        tk.Button(bf2, text="History", command=self.show_history, font=("Helvetica", 10, "bold"), fg="#111111", bg="white", relief="solid", bd=2, cursor="hand2", padx=12, pady=5).pack(side="left", padx=(8,0))
-        tk.Button(bf2, text="Backup Key", command=self.backup_key, font=("Helvetica", 10, "bold"), fg="#111111", bg="white", relief="solid", bd=2, cursor="hand2", padx=12, pady=5).pack(side="left", padx=(8,0))
+        self.copy_btn = tk.Button(bf2, text="Copy", command=self.copy_address, font=("Helvetica", 10, "bold"), fg="white", bg="#111111", relief="flat", cursor="hand2", padx=12, pady=5, state="disabled")
+        self.copy_btn.pack(side="left")
+        self.new_address_btn = tk.Button(bf2, text="New Address", command=self.new_address, font=("Helvetica", 10, "bold"), fg="#111111", bg="white", relief="solid", bd=2, cursor="hand2", padx=12, pady=5, state="disabled")
+        self.new_address_btn.pack(side="left", padx=(8,0))
+        self.history_btn = tk.Button(bf2, text="History", command=self.show_history, font=("Helvetica", 10, "bold"), fg="#111111", bg="white", relief="solid", bd=2, cursor="hand2", padx=12, pady=5, state="disabled")
+        self.history_btn.pack(side="left", padx=(8,0))
+        self.backup_btn = tk.Button(bf2, text="Backup Key", command=self.backup_key, font=("Helvetica", 10, "bold"), fg="#111111", bg="white", relief="solid", bd=2, cursor="hand2", padx=12, pady=5, state="disabled")
+        self.backup_btn.pack(side="left", padx=(8,0))
 
         tk.Frame(self.root, height=1, bg="#cccccc").pack(fill="x", padx=30)
 
@@ -415,8 +686,10 @@ class PiWallet:
         imp_f.pack(fill="x", pady=8)
         tk.Label(imp_f, text="IMPORT WALLET", font=("Helvetica", 10, "bold"), fg="#555555", bg="white").pack(anchor="w")
         self.import_var = tk.StringVar()
-        tk.Entry(imp_f, textvariable=self.import_var, font=("Courier", 9), fg="#111111", bg="#f0f0f0", relief="flat", bd=1).pack(fill="x", pady=4, ipady=6)
-        tk.Button(imp_f, text="Import Private Key →", command=self.import_key, font=("Helvetica", 10, "bold"), fg="white", bg="#111111", relief="flat", cursor="hand2", padx=12, pady=5).pack(anchor="e", pady=2)
+        self.import_entry = tk.Entry(imp_f, textvariable=self.import_var, font=("Courier", 9), fg="#111111", bg="#f0f0f0", relief="flat", bd=1, state="disabled")
+        self.import_entry.pack(fill="x", pady=4, ipady=6)
+        self.import_btn = tk.Button(imp_f, text="Import Private Key →", command=self.import_key, font=("Helvetica", 10, "bold"), fg="white", bg="#111111", relief="flat", cursor="hand2", padx=12, pady=5, state="disabled")
+        self.import_btn.pack(anchor="e", pady=2)
 
         tk.Frame(self.root, height=1, bg="#cccccc").pack(fill="x", padx=30)
 
@@ -424,10 +697,13 @@ class PiWallet:
         sf.pack(fill="x", pady=8)
         tk.Label(sf, text="SEND PI", font=("Helvetica", 10, "bold"), fg="#555555", bg="white").pack(anchor="w")
         self.send_addr_var = tk.StringVar()
-        tk.Entry(sf, textvariable=self.send_addr_var, font=("Courier", 9), fg="#111111", bg="#f0f0f0", relief="flat", bd=1).pack(fill="x", pady=4, ipady=6)
+        self.send_addr_entry = tk.Entry(sf, textvariable=self.send_addr_var, font=("Courier", 9), fg="#111111", bg="#f0f0f0", relief="flat", bd=1, state="disabled")
+        self.send_addr_entry.pack(fill="x", pady=4, ipady=6)
         self.send_amt_var = tk.StringVar()
-        tk.Entry(sf, textvariable=self.send_amt_var, font=("Helvetica", 10), fg="#111111", bg="#f0f0f0", relief="flat", bd=1).pack(fill="x", pady=4, ipady=6)
-        tk.Button(sf, text="Send →", command=self.send_pi, font=("Helvetica", 11, "bold"), fg="white", bg="#111111", relief="flat", cursor="hand2", padx=20, pady=6).pack(anchor="e", pady=2)
+        self.send_amt_entry = tk.Entry(sf, textvariable=self.send_amt_var, font=("Helvetica", 10), fg="#111111", bg="#f0f0f0", relief="flat", bd=1, state="disabled")
+        self.send_amt_entry.pack(fill="x", pady=4, ipady=6)
+        self.send_btn = tk.Button(sf, text="Send →", command=self.send_pi, font=("Helvetica", 11, "bold"), fg="white", bg="#111111", relief="flat", cursor="hand2", padx=20, pady=6, state="disabled")
+        self.send_btn.pack(anchor="e", pady=2)
 
         tk.Frame(self.root, height=1, bg="#cccccc").pack(fill="x", padx=30)
 
@@ -435,8 +711,21 @@ class PiWallet:
         mf.pack(fill="x", pady=10)
         self.mine_btn = tk.Button(mf, text="⛏  Start Mining", command=self.toggle_mine,
             font=("Helvetica", 13, "bold"), fg="white", bg="#111111",
-            relief="flat", cursor="hand2", padx=20, pady=10)
+            relief="flat", cursor="hand2", padx=20, pady=10, state="disabled")
         self.mine_btn.pack(fill="x")
+
+        self.daemon_dependent_widgets.extend([
+            self.copy_btn,
+            self.new_address_btn,
+            self.history_btn,
+            self.backup_btn,
+            self.import_entry,
+            self.import_btn,
+            self.send_addr_entry,
+            self.send_amt_entry,
+            self.send_btn,
+            self.mine_btn,
+        ])
 
         self.status_var = tk.StringVar(value="")
         tk.Label(self.root, textvariable=self.status_var, font=("Helvetica", 10), fg="#555555", bg="white").pack(pady=4)
@@ -620,15 +909,45 @@ class PiWallet:
         self._request_balance_update()
 
     def on_close(self):
-        if self.closing:
+        if self.closing or self.close_requested:
             return
         if self.mining:
             if not messagebox.askokcancel("Quit", "Mining is running. Stop and close?"):
                 return
+        self.close_requested = True
+        self._set_daemon_controls_enabled(False)
+        self.status_var.set("Checking Pi Core...")
+        self._start_worker(self._check_sync_before_close, "daemon-sync-check")
+
+    def _check_sync_before_close(self):
+        syncing = False
+        if self.daemon_controller.ownership == "managed":
+            syncing = self.daemon_controller.is_syncing() is True
+        self._queue_ui(self._confirm_syncing_close, syncing)
+
+    def _confirm_syncing_close(self, syncing):
+        if not self.close_requested or self.closing:
+            return
+        if syncing and not messagebox.askokcancel(
+            "Quit",
+            "Pi Core is still syncing. Stop Pi Core and close Pi Wallet?",
+        ):
+            self.close_requested = False
+            self._set_daemon_controls_enabled(
+                self.daemon_controller.ownership in ("external", "managed")
+            )
+            self.status_var.set("")
+            return
+        self._begin_close()
+
+    def _begin_close(self):
+        if self.closing:
+            return
         self.closing = True
+        self.daemon_controller.cancel()
         self.mining = False
         self.stop_event.set()
-        self.mine_btn.config(state="disabled")
+        self._set_daemon_controls_enabled(False)
         self.status_var.set("Closing...")
         for after_id in (self.ui_after_id, self.refresh_after_id):
             if after_id is not None:
@@ -643,6 +962,30 @@ class PiWallet:
             active = any(worker.is_alive() for worker in self.workers)
         if active:
             self.close_after_id = self.root.after(50, self._wait_for_workers)
+            return
+        self._shutdown_daemon_then_destroy()
+
+    def _shutdown_daemon_then_destroy(self):
+        if self.daemon_controller.ownership != "managed":
+            self.root.destroy()
+            return
+        if not self.daemon_shutdown_started:
+            self.daemon_shutdown_started = True
+            self.daemon_shutdown_thread = threading.Thread(
+                target=self.daemon_controller.shutdown_managed,
+                name="daemon-shutdown",
+            )
+            self.daemon_shutdown_thread.start()
+        self._wait_for_daemon_shutdown()
+
+    def _wait_for_daemon_shutdown(self):
+        if (
+            self.daemon_shutdown_thread is not None
+            and self.daemon_shutdown_thread.is_alive()
+        ):
+            self.close_after_id = self.root.after(
+                50, self._wait_for_daemon_shutdown
+            )
             return
         self.root.destroy()
 
