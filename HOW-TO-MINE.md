@@ -1,110 +1,167 @@
-# Getting Started with Pi
+# Building and Mining Pi from Source
 
-Pi is a peer-to-peer electronic currency. No accounts, no sign-ups. Just download, run, and mine.
+Pi currently provides source code only. The `v1.0.0` release does not contain
+verified binary assets. Do not download Pi binaries from third parties.
+
+These instructions describe the current development main branch. They do not
+declare a packaged production release.
 
 ## Requirements
 
-- Tor must be running on 127.0.0.1:9050
-  - macOS: `brew install tor && brew services start tor`
-  - Linux: `sudo apt install tor && sudo systemctl start tor`
+- A 64-bit Linux or macOS computer
+- Git, a C++ toolchain, Autotools, Boost, libevent, and SQLite
+- Python 3 with Tk support for the Pi Wallet GUI
+- Tor exposing a SOCKS5 proxy on `127.0.0.1:9050`
 
-## macOS
+The complete inherited build documentation is available in:
 
-1. Download `Pi-macos-x86_64.zip` from the releases page and unzip
+- Linux: `doc/build-unix.md`
+- macOS: `doc/build-osx.md`
+- Windows: `doc/build-windows.md`
 
-2. Copy config:
-   ```
-   cp pi.conf.example "$HOME/Library/Application Support/Pi/pi.conf"
-   ```
+### Ubuntu or Debian dependencies
 
-3. Start node:
-   ```
-   ./pid -conf="$HOME/Library/Application Support/Pi/pi.conf" -daemon
-   ```
-
-4. Create wallet:
-   ```
-   ./pi-cli -conf="$HOME/Library/Application Support/Pi/pi.conf" createwallet "pi_wallet"
-   ```
-
-5. Get address:
-   ```
-   ./pi-cli -conf="$HOME/Library/Application Support/Pi/pi.conf" -rpcwallet=pi_wallet getnewaddress
-   ```
-   Returns: `pi1q...` — copy this address.
-
-6. Start mining:
-   ```
-   ./pi-cli -rpcclienttimeout=0 \
-     -conf="$HOME/Library/Application Support/Pi/pi.conf" \
-     -rpcwallet=pi_wallet \
-     generatetoaddress 1 "<YOUR_PI_ADDRESS>"
-   ```
-   Replace `<YOUR_PI_ADDRESS>` with the address returned in step 5.
-
-## Linux
-
-1. Download `Pi-linux-x86_64.zip` from the releases page and unzip
-
-2. Make executable:
-   ```
-   chmod +x pid-linux-new pi-cli-linux-new pi-tx-linux-new
-   ```
-
-3. Copy config:
-   ```
-   mkdir -p ~/.pi
-   cp pi.conf.example ~/.pi/pi.conf
-   ```
-
-4. Start node:
-   ```
-   ./pid-linux-new -conf="$HOME/.pi/pi.conf" -daemon
-   ```
-
-5. Create wallet:
-   ```
-   ./pi-cli-linux-new -conf="$HOME/.pi/pi.conf" createwallet "pi_wallet"
-   ```
-
-6. Get address:
-   ```
-   ./pi-cli-linux-new -conf="$HOME/.pi/pi.conf" -rpcwallet=pi_wallet getnewaddress
-   ```
-   Returns: `pi1q...` — copy this address.
-
-7. Start mining:
-   ```
-   ./pi-cli-linux-new -rpcclienttimeout=0 \
-     -conf="$HOME/.pi/pi.conf" \
-     -rpcwallet=pi_wallet \
-     generatetoaddress 1 "<YOUR_PI_ADDRESS>"
-   ```
-   Replace `<YOUR_PI_ADDRESS>` with the address returned in step 6.
-
-## Windows
-
-Build from source: https://github.com/sapiensradix/Pi
-
-## Check balance
-
-```
-./pi-cli -conf="..." getwalletinfo
+```bash
+sudo apt-get update
+sudo apt-get install build-essential libtool autotools-dev automake \
+  pkg-config bsdmainutils python3 python3-tk libevent-dev libboost-dev \
+  libsqlite3-dev tor
+sudo systemctl enable --now tor
 ```
 
-- `balance` — spendable PI
-- `immature_balance` — mining rewards waiting for coinbase maturity (100 blocks)
+The default Pi wallet is a descriptor wallet backed by SQLite. The build below
+disables legacy Berkeley DB wallet support and does not change the descriptor
+wallet used by Pi Wallet.
 
-Mining rewards first appear as immature balance. Rewards become spendable after 100 blocks.
+## Build
 
-## Network
+```bash
+git clone https://github.com/sapiensradix/Pi.git
+cd Pi
+./autogen.sh
+./configure --without-gui --without-bdb
+make -j"$(nproc)"
+```
 
-- Node (Tor): `x5htnjlwj6ymj4cdj5satcbp77mgqged3dryfnm3npdvcl523thqy5yd.onion:31415`
-- Block reward: `50 PI`
-- Halving: every `210,000` blocks
-- Algorithm: SHA-256
+On macOS, follow `doc/build-osx.md` for dependencies and replace `$(nproc)`
+with `$(sysctl -n hw.ncpu)`.
+
+Verify the executable names after the build:
+
+```bash
+./src/pid --version
+./src/pi-cli --version
+```
+
+## Tor-only client configuration
+
+Create the Pi data directory:
+
+```bash
+mkdir -p "$HOME/.pi"
+chmod 700 "$HOME/.pi"
+```
+
+On Linux, save the following as `$HOME/.pi/pi.conf`. On macOS, save it as
+`$HOME/Library/Application Support/Pi/pi.conf`.
+
+```ini
+server=1
+listen=0
+discover=0
+dnsseed=0
+fixedseeds=0
+listenonion=0
+
+onlynet=onion
+proxy=127.0.0.1:9050
+onion=127.0.0.1:9050
+
+addnode=x5htnjlwj6ymj4cdj5satcbp77mgqged3dryfnm3npdvcl523thqy5yd.onion:31415
+
+rpcbind=127.0.0.1
+rpcallowip=127.0.0.1
+```
+
+Do not add a default `rpcuser` or `rpcpassword`. Pi Core creates an RPC cookie
+inside the data directory and Pi Wallet uses that cookie automatically.
+
+The published onion above is the currently available bootstrap endpoint. It is
+not yet the intended three-node production bootstrap cluster.
+
+## Start Pi Wallet
+
+From the repository root:
+
+```bash
+python3 src/pi_wallet.py
+```
+
+Pi Wallet displays its window immediately. It starts `pid` when no Pi daemon is
+running, creates or loads the descriptor wallet named `pi_wallet`, and enables
+mining only after at least one Tor peer is connected and the local chain has
+caught up with its headers.
+
+Press **Start Mining** to mine. Press **Stop Mining** to prevent another finite
+mining batch from starting. Closing a wallet that started its own daemon stops
+that exact child process; closing a wallet attached to an external daemon leaves
+the external daemon running.
+
+## Command-line verification and mining
+
+The GUI is the normal path. The following commands are useful for diagnosis.
+
+Start Pi Core and wait for RPC readiness:
+
+```bash
+./src/pid -daemon
+./src/pi-cli -rpcwait getblockchaininfo
+./src/pi-cli getconnectioncount
+```
+
+Before mining, confirm that `getconnectioncount` is at least `1`, and that the
+`blocks` and `headers` values reported by `getblockchaininfo` are equal.
+
+For a new data directory, create a descriptor wallet and address:
+
+```bash
+./src/pi-cli createwallet "pi_wallet"
+ADDRESS="$(./src/pi-cli -rpcwallet=pi_wallet getnewaddress)"
+printf '%s\n' "$ADDRESS"
+```
+
+Run finite SHA-256d mining batches until stopped with `Ctrl-C`:
+
+```bash
+while true; do
+  ./src/pi-cli -rpcwallet=pi_wallet \
+    generatetoaddress 1 "$ADDRESS" 1000000
+done
+```
+
+Each call tries at most 1,000,000 hashes. An empty result means that batch did
+not find a block; it does not mean mining failed.
+
+Check wallet balances:
+
+```bash
+./src/pi-cli -rpcwallet=pi_wallet getbalances
+```
+
+New block rewards first appear as immature balance. Coinbase rewards become
+spendable after 100 blocks.
+
+Stop an externally started daemon cleanly:
+
+```bash
+./src/pi-cli stop
+```
+
+## Current network identity
+
+- P2P port: `31415`
+- Tor transport: onion v3 only
 - Address format: `pi1q...`
-
-## Source
-
-https://github.com/sapiensradix/Pi
+- Proof of work: SHA-256d
+- Initial block subsidy: `50 PI`
+- Halving interval: `210,000` blocks
