@@ -20,6 +20,11 @@ RPC_TIMEOUT = 10
 DAEMON_START_TIMEOUT = 30
 DAEMON_SHUTDOWN_TIMEOUT = 30
 DAEMON_POLL_INTERVAL = 0.25
+TOR_START_TIMEOUT = 30
+TOR_SHUTDOWN_TIMEOUT = 15
+TOR_POLL_INTERVAL = 0.25
+TOR_SOCKS_HOST = "127.0.0.1"
+TOR_SOCKS_PORT = 9050
 MINING_MAX_TRIES = 1_000_000
 MINING_RETRY_DELAY = 0.05
 WALLET_UNLOCK_SECONDS = 30
@@ -52,6 +57,7 @@ CONF_PATH = DATADIR / "pi.conf"
 ACTIVE_WALLET_STATE_PATH = DATADIR / "wallet-gui-state.json"
 DIR = os.path.dirname(os.path.abspath(__file__))
 PID_BIN = os.path.join(DIR, "pid")
+TOR_BIN = os.path.join(DIR, "tor")
 _RPC_STATE = threading.local()
 
 
@@ -133,6 +139,25 @@ def _loopback_rpc_listener(port):
             return True
     except OSError:
         return False
+
+
+def _loopback_listener(host, port):
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _tor_socks_ready(host=TOR_SOCKS_HOST, port=TOR_SOCKS_PORT):
+    try:
+        with socket.create_connection((host, port), timeout=0.5) as connection:
+            connection.settimeout(0.5)
+            connection.sendall(b"\x05\x01\x00")
+            response = connection.recv(2)
+    except OSError:
+        return False
+    return response == b"\x05\x00"
 
 
 def _cookie_path(conf):
@@ -561,6 +586,163 @@ class DaemonController:
         return result
 
 
+class TorController:
+    def __init__(self, tor_path=None, datadir=None):
+        self.tor_path = Path(TOR_BIN if tor_path is None else tor_path)
+        self.datadir = Path(DATADIR if datadir is None else datadir)
+        self.tor_datadir = self.datadir / "tor-client"
+        self.startup_log_path = self.datadir / "pi-wallet-tor.log"
+        self.process = None
+        self.ownership = "none"
+        self.last_error = ""
+        self.cancel_event = threading.Event()
+
+    def _wait_for_ready(self, deadline):
+        while time.monotonic() < deadline:
+            if self.cancel_event.is_set():
+                raise PiRPCError("Tor startup was cancelled.", kind="cancelled")
+            if _tor_socks_ready():
+                if self.process is not None and self.process.poll() is None:
+                    self.ownership = "managed"
+                else:
+                    self.process = None
+                    self.ownership = "external"
+                self.last_error = ""
+                return
+            if self.process is not None and self.process.poll() is not None:
+                raise PiRPCError(
+                    "The managed Tor process exited before its SOCKS proxy became ready. "
+                    f"See {self.startup_log_path}.",
+                    kind="startup",
+                )
+            time.sleep(TOR_POLL_INTERVAL)
+        raise PiRPCError(
+            "Tor did not become ready before the startup deadline. "
+            f"See {self.startup_log_path}.",
+            kind="startup",
+        )
+
+    def _start_managed(self):
+        if self.process is not None:
+            raise PiRPCError("Tor startup has already been attempted.", kind="startup")
+        if not self.tor_path.is_file() or not os.access(self.tor_path, os.X_OK):
+            raise PiRPCError(
+                "Tor is not running and the bundled Tor executable was not found. "
+                "Install or start Tor on 127.0.0.1:9050.",
+                kind="startup",
+            )
+        try:
+            self.datadir.mkdir(parents=True, exist_ok=True)
+            self.tor_datadir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(self.tor_datadir, 0o700)
+            startup_log = self.startup_log_path.open("ab")
+            os.chmod(self.startup_log_path, 0o600)
+        except OSError as exc:
+            raise PiRPCError(
+                "The private Tor data directory or startup log could not be created.",
+                kind="startup",
+            ) from exc
+
+        missing_torrc = self.tor_datadir / "pi-wallet-no-torrc"
+        command = [
+            str(self.tor_path),
+            "--ignore-missing-torrc",
+            "-f",
+            str(missing_torrc),
+            "--ClientOnly",
+            "1",
+            "--RunAsDaemon",
+            "0",
+            "--ControlPort",
+            "0",
+            "--DataDirectory",
+            str(self.tor_datadir),
+            "--SocksPort",
+            f"{TOR_SOCKS_HOST}:{TOR_SOCKS_PORT}",
+            "--SocksPolicy",
+            "accept 127.0.0.1",
+            "--SocksPolicy",
+            "reject *",
+            "--Log",
+            "err stderr",
+        ]
+        try:
+            try:
+                self.process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=startup_log,
+                    stderr=subprocess.STDOUT,
+                )
+            except OSError as exc:
+                self.process = None
+                raise PiRPCError("Tor could not be started.", kind="startup") from exc
+        finally:
+            startup_log.close()
+        self.ownership = "managed"
+
+    def _terminate_started_child(self):
+        process = self.process
+        if process is None:
+            return
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=TOR_SHUTDOWN_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=TOR_SHUTDOWN_TIMEOUT)
+        self.process = None
+        self.ownership = "none"
+
+    def attach_or_start(self):
+        self.cancel_event.clear()
+        if _tor_socks_ready():
+            self.process = None
+            self.ownership = "external"
+            self.last_error = ""
+            return "external"
+        if _loopback_listener(TOR_SOCKS_HOST, TOR_SOCKS_PORT):
+            raise PiRPCError(
+                "Port 9050 is in use, but it is not accepting unauthenticated "
+                "SOCKS5 connections. Pi Wallet will not start another Tor process.",
+                kind="identity",
+            )
+        self._start_managed()
+        try:
+            self._wait_for_ready(time.monotonic() + TOR_START_TIMEOUT)
+        except PiRPCError as exc:
+            self.last_error = str(exc)
+            self._terminate_started_child()
+            raise
+        return "managed"
+
+    def cancel(self):
+        self.cancel_event.set()
+
+    def shutdown_managed(self):
+        process = self.process
+        if self.ownership != "managed" or process is None:
+            return "external"
+        if process.poll() is not None:
+            self.process = None
+            self.ownership = "none"
+            return "exited"
+
+        result = "graceful"
+        process.terminate()
+        try:
+            process.wait(timeout=TOR_SHUTDOWN_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            result = "killed"
+            process.kill()
+            process.wait(timeout=TOR_SHUTDOWN_TIMEOUT)
+        finally:
+            self.process = None
+            self.ownership = "none"
+        return result
+
+
 class PiWallet:
     def __init__(self, root):
         self.root = root
@@ -587,14 +769,17 @@ class PiWallet:
         self.refresh_after_id = None
         self.close_after_id = None
         self.close_requested = False
+        self.tor_controller = TorController()
         self.daemon_controller = DaemonController()
         self.daemon_dependent_widgets = []
         self.daemon_shutdown_started = False
         self.daemon_shutdown_thread = None
+        self.tor_shutdown_started = False
+        self.tor_shutdown_thread = None
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.build_ui()
         self._drain_ui_queue()
-        self._start_worker(self._initialize_daemon, "daemon-init")
+        self._start_worker(self._initialize_tor, "tor-init")
 
     def _start_worker(self, target, name, *args):
         if self.closing:
@@ -649,6 +834,25 @@ class PiWallet:
         self.status_var.set("Checking Pi network...")
         self._request_mining_readiness()
         self._schedule_auto_refresh()
+
+    def _initialize_tor(self):
+        self._queue_ui(self.status_var.set, "Connecting to Tor...")
+        try:
+            self.tor_controller.attach_or_start()
+        except PiRPCError as exc:
+            if not self.closing:
+                self._queue_ui(self._tor_failed, str(exc))
+            return
+        self._queue_ui(self._tor_ready)
+
+    def _tor_ready(self):
+        if self.closing:
+            return
+        self._start_worker(self._initialize_daemon, "daemon-init")
+
+    def _tor_failed(self, message):
+        self._set_daemon_controls_enabled(False)
+        self.status_var.set(message)
 
     def _initialize_daemon(self):
         self._queue_ui(self.status_var.set, "Connecting to Pi Core...")
@@ -1424,6 +1628,7 @@ class PiWallet:
         if self.closing:
             return
         self.closing = True
+        self.tor_controller.cancel()
         self.daemon_controller.cancel()
         self.mining = False
         self.stop_event.set()
@@ -1447,7 +1652,7 @@ class PiWallet:
 
     def _shutdown_daemon_then_destroy(self):
         if self.daemon_controller.ownership != "managed":
-            self.root.destroy()
+            self._shutdown_tor_then_destroy()
             return
         if not self.daemon_shutdown_started:
             self.daemon_shutdown_started = True
@@ -1466,6 +1671,29 @@ class PiWallet:
             self.close_after_id = self.root.after(
                 50, self._wait_for_daemon_shutdown
             )
+            return
+        self._shutdown_tor_then_destroy()
+
+    def _shutdown_tor_then_destroy(self):
+        tor_controller = getattr(self, "tor_controller", None)
+        if tor_controller is None or tor_controller.ownership != "managed":
+            self.root.destroy()
+            return
+        if not getattr(self, "tor_shutdown_started", False):
+            self.tor_shutdown_started = True
+            self.tor_shutdown_thread = threading.Thread(
+                target=tor_controller.shutdown_managed,
+                name="tor-shutdown",
+            )
+            self.tor_shutdown_thread.start()
+        self._wait_for_tor_shutdown()
+
+    def _wait_for_tor_shutdown(self):
+        if (
+            self.tor_shutdown_thread is not None
+            and self.tor_shutdown_thread.is_alive()
+        ):
+            self.close_after_id = self.root.after(50, self._wait_for_tor_shutdown)
             return
         self.root.destroy()
 
