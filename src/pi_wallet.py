@@ -22,7 +22,14 @@ DAEMON_SHUTDOWN_TIMEOUT = 30
 DAEMON_POLL_INTERVAL = 0.25
 MINING_MAX_TRIES = 1_000_000
 MINING_RETRY_DELAY = 0.05
+WALLET_UNLOCK_SECONDS = 30
 DEFAULT_WALLET_NAME = "pi_wallet"
+SENSITIVE_WALLET_METHODS = {
+    "createwallet",
+    "encryptwallet",
+    "walletpassphrase",
+    "walletpassphrasechange",
+}
 
 
 def default_pi_datadir(platform=None, environ=None, home=None):
@@ -195,12 +202,13 @@ def _rpc_request(method, params=None, wallet=None):
     if wallet is not None:
         wallet_path = urllib.parse.quote(str(wallet), safe="")
         url = f"{url}/wallet/{wallet_path}"
+    rpc_params = params if params is not None else []
     payload = json.dumps(
         {
             "jsonrpc": "1.0",
             "id": "wallet",
             "method": method,
-            "params": _json_value(params if params is not None else []),
+            "params": _json_value(rpc_params),
         },
         separators=(",", ":"),
     ).encode("utf-8")
@@ -209,7 +217,12 @@ def _rpc_request(method, params=None, wallet=None):
         username, password, auth_source = _read_auth(conf)
         credentials = f"{username}:{password}"
         auth = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
-        secrets = (username, password, credentials, auth)
+        sensitive_params = ()
+        if method in SENSITIVE_WALLET_METHODS:
+            sensitive_params = tuple(
+                value for value in rpc_params if isinstance(value, str)
+            )
+        secrets = (username, password, credentials, auth, *sensitive_params)
         request = urllib.request.Request(
             url,
             data=payload,
@@ -519,6 +532,7 @@ class PiWallet:
         self.blocks_mined = 0
         self.current_address = ""
         self.active_wallet = None
+        self.wallet_encrypted = False
         self.stop_event = threading.Event()
         self.mining_thread = None
         self.balance_thread = None
@@ -630,10 +644,100 @@ class PiWallet:
     def _init(self):
         self._queue_ui(self.status_var.set, "Connecting...")
         try:
-            self.active_wallet = self._ensure_wallet()
+            self.active_wallet = self._ensure_wallet(require_encryption=True)
         except PiRPCError as exc:
             self._queue_ui(self.status_var.set, str(exc))
             return
+        self._finish_wallet_init()
+
+    def _ask_new_wallet_password(self, title, prompt):
+        while not self.closing:
+            passphrase = simpledialog.askstring(
+                title,
+                prompt,
+                show="*",
+                parent=self.root,
+            )
+            if passphrase is None:
+                return None
+            if not passphrase:
+                messagebox.showerror(
+                    title,
+                    "The wallet password cannot be empty.",
+                    parent=self.root,
+                )
+                continue
+            confirmation = simpledialog.askstring(
+                title,
+                "Confirm the wallet password:",
+                show="*",
+                parent=self.root,
+            )
+            if confirmation is None:
+                return None
+            if passphrase != confirmation:
+                messagebox.showerror(
+                    title,
+                    "The wallet passwords do not match.",
+                    parent=self.root,
+                )
+                continue
+            return passphrase
+        return None
+
+    def _request_new_wallet_password(self):
+        result = queue.Queue(maxsize=1)
+        completed = threading.Event()
+        self._queue_ui(
+            self._collect_new_wallet_password,
+            result,
+            completed,
+        )
+        while not completed.wait(0.1):
+            if self.closing:
+                return None
+        return result.get()
+
+    def _collect_new_wallet_password(self, result, completed):
+        passphrase = self._ask_new_wallet_password(
+            "Create Pi Wallet",
+            "Create a password for your Pi wallet.\n\n"
+            "This password is not stored and cannot be recovered.",
+        )
+        result.put(passphrase)
+        completed.set()
+
+    def _prompt_encrypt_existing_wallet(self):
+        if self.closing:
+            return
+        passphrase = self._ask_new_wallet_password(
+            "Protect Pi Wallet",
+            "This Pi wallet is not encrypted. Create a password now.\n\n"
+            "This password is not stored and cannot be recovered.",
+        )
+        if passphrase is None:
+            self.status_var.set("Wallet encryption cancelled. Restart Pi Wallet to try again.")
+            return
+        self.status_var.set("Encrypting Pi wallet...")
+        self._start_worker(
+            self._encrypt_existing_wallet,
+            "wallet-encrypt",
+            passphrase,
+        )
+
+    def _encrypt_existing_wallet(self, passphrase):
+        try:
+            _rpc_request(
+                "encryptwallet",
+                [passphrase],
+                wallet=self.active_wallet,
+            )
+        except PiRPCError as exc:
+            self._queue_ui(self.status_var.set, str(exc))
+            return
+        self._finish_wallet_init()
+
+    def _finish_wallet_init(self):
         addr = self._wallet_rpc("getnewaddress")
         if addr:
             self._queue_ui(self._set_address, addr)
@@ -642,17 +746,21 @@ class PiWallet:
             self._queue_ui(self.status_var.set, error)
             return
         info = self._wallet_rpc("getwalletinfo")
-        if info:
-            mature = info.get("balance", Decimal("0"))
-            immature = info.get("immature_balance", Decimal("0"))
-            self._queue_ui(self._set_balance, mature, immature)
-        else:
+        if not info:
             error = rpc_error()
             self._queue_ui(self.status_var.set, error)
             return
+        if hasattr(self, "wallet_encrypted"):
+            if "unlocked_until" not in info:
+                self._queue_ui(self._prompt_encrypt_existing_wallet)
+                return
+            self.wallet_encrypted = True
+        mature = info.get("balance", Decimal("0"))
+        immature = info.get("immature_balance", Decimal("0"))
+        self._queue_ui(self._set_balance, mature, immature)
         self._queue_ui(self._wallet_ready)
 
-    def _ensure_wallet(self):
+    def _ensure_wallet(self, passphrase=None, require_encryption=False):
         loaded = _rpc_request("listwallets")
         if not isinstance(loaded, list):
             raise PiRPCError("Pi Core returned an invalid wallet list.")
@@ -669,7 +777,24 @@ class PiWallet:
         if DEFAULT_WALLET_NAME in wallet_names:
             _rpc_request("loadwallet", [DEFAULT_WALLET_NAME])
         else:
-            _rpc_request("createwallet", [DEFAULT_WALLET_NAME])
+            if require_encryption and passphrase is None:
+                passphrase = self._request_new_wallet_password()
+                if passphrase is None:
+                    raise PiRPCError(
+                        "Wallet creation cancelled. Restart Pi Wallet to try again."
+                    )
+            create_params = [DEFAULT_WALLET_NAME]
+            if passphrase is not None:
+                create_params = [
+                    DEFAULT_WALLET_NAME,
+                    False,
+                    False,
+                    passphrase,
+                    False,
+                    True,
+                    True,
+                ]
+            _rpc_request("createwallet", create_params)
 
         loaded = _rpc_request("listwallets")
         if DEFAULT_WALLET_NAME not in loaded:
@@ -941,20 +1066,72 @@ class PiWallet:
         except InvalidOperation:
             messagebox.showwarning("Send", "Enter a valid amount.")
             return
-        if messagebox.askyesno("Confirm", f"Send {amt} PI to\n{addr}?"):
-            def _s():
-                success, _ = self._wallet_rpc_with_status(
-                    "sendtoaddress", [addr, amount]
+        if not messagebox.askyesno("Confirm", f"Send {amt} PI to\n{addr}?"):
+            return
+        passphrase = None
+        if self.wallet_encrypted:
+            passphrase = simpledialog.askstring(
+                "Unlock Pi Wallet",
+                "Enter your wallet password to send PI:",
+                show="*",
+                parent=self.root,
+            )
+            if passphrase is None:
+                return
+            if not passphrase:
+                messagebox.showwarning(
+                    "Send",
+                    "Enter your wallet password.",
+                    parent=self.root,
                 )
-                if success:
-                    self._queue_ui(self.status_var.set, "Sent!")
-                    self._queue_ui(self.send_addr_var.set, "")
-                    self._queue_ui(self.send_amt_var.set, "")
-                    self._queue_ui(self._request_balance_update)
-                else:
-                    error = rpc_error("Send failed.")
-                    self._queue_ui(self.status_var.set, error)
-            self._start_worker(_s, "wallet-send")
+                return
+        self.status_var.set("Sending...")
+        self._start_worker(
+            self._send_pi_unlocked,
+            "wallet-send",
+            addr,
+            amount,
+            passphrase,
+        )
+
+    def _send_pi_unlocked(self, addr, amount, passphrase):
+        unlocked = False
+        try:
+            if passphrase is not None:
+                success, _ = self._wallet_rpc_with_status(
+                    "walletpassphrase",
+                    [passphrase, WALLET_UNLOCK_SECONDS],
+                )
+                if not success:
+                    self._queue_ui(
+                        self.status_var.set,
+                        rpc_error("Wallet unlock failed."),
+                    )
+                    return
+                unlocked = True
+
+            success, _ = self._wallet_rpc_with_status(
+                "sendtoaddress",
+                [addr, amount],
+            )
+            if success:
+                self._queue_ui(self.status_var.set, "Sent!")
+                self._queue_ui(self.send_addr_var.set, "")
+                self._queue_ui(self.send_amt_var.set, "")
+                self._queue_ui(self._request_balance_update)
+            else:
+                self._queue_ui(
+                    self.status_var.set,
+                    rpc_error("Send failed."),
+                )
+        finally:
+            if unlocked:
+                success, _ = self._wallet_rpc_with_status("walletlock")
+                if not success:
+                    self._queue_ui(
+                        self.status_var.set,
+                        rpc_error("PI was sent, but the wallet could not be relocked."),
+                    )
 
     def toggle_mine(self):
         if not self.mining:
