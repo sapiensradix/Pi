@@ -39,7 +39,7 @@ wallet used by Pi Wallet.
 git clone https://github.com/sapiensradix/Pi.git
 cd Pi
 ./autogen.sh
-./configure --without-gui --without-bdb
+./configure --without-gui --without-bdb --without-miniupnpc
 make -j"$(nproc)"
 ```
 
