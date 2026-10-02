@@ -1,9 +1,9 @@
 # Pi Wallet macOS packaging
 
 This directory builds the Python/Tk Pi Wallet, the Pi daemon, and the official
-Tor Expert Bundle runtime into one Intel macOS application bundle. It does not
-bundle bootstrap endpoints, a configuration file, wallet data, credentials, or
-onion keys.
+Tor Expert Bundle runtime into one Intel macOS application bundle. It never
+bundles wallet data, credentials, or onion keys. A public release also embeds a
+separately reviewed Tor-only bootstrap configuration supplied at build time.
 
 ## Scope
 
@@ -16,6 +16,12 @@ onion keys.
 - Release signing: Developer ID Application with hardened runtime
 
 Apple Silicon and release configuration are separate release tasks.
+
+The local developer build may omit a bootstrap configuration. A public release
+must provide a separately reviewed Tor-only configuration through
+`PI_WALLET_BOOTSTRAP_CONFIG`. The release pipeline refuses to continue unless
+that file contains at least three distinct, checksum-valid Tor v3 onion
+bootstrap endpoints on port `31415` and all fail-closed network settings.
 
 ## Tor supply-chain verification
 
@@ -100,6 +106,7 @@ Then run the release pipeline with the exact certificate name shown by
 ```sh
 PI_WALLET_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
 PI_WALLET_NOTARY_PROFILE="pi-wallet-notary" \
+PI_WALLET_BOOTSTRAP_CONFIG="/secure/release-input/pi.conf.release" \
 contrib/macdeploy/pi-wallet/release.sh
 ```
 
@@ -113,5 +120,11 @@ success it:
 5. staples and validates the notarization ticket;
 6. runs Gatekeeper assessment; and
 7. writes `dist/release/SHA256SUMS`.
+
+On first launch, Pi Wallet installs the bundled configuration as `pi.conf` with
+mode `0600` only when the user has no existing configuration. An existing
+configuration is never overwritten and must independently pass the Tor-only
+validation before Pi Core is started. The reviewed release input remains
+outside Git so production endpoints are not committed before approval.
 
 The DMG and checksums are release artifacts and must not be committed to Git.

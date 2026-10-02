@@ -11,9 +11,18 @@ DAEMON_BINARY = REPO_ROOT / "src" / "pid"
 TOR_BINARY = Path(os.environ["PI_WALLET_TOR_BINARY"]).resolve()
 TOR_LIBEVENT = Path(os.environ["PI_WALLET_TOR_LIBEVENT"]).resolve()
 TOR_LICENSE_DIR = Path(os.environ["PI_WALLET_TOR_LICENSE_DIR"]).resolve()
+BOOTSTRAP_CONFIG = os.environ.get("PI_WALLET_PACKAGED_BOOTSTRAP_CONFIG")
 ICON_FILE = Path(os.environ["PI_WALLET_ICON"]).resolve()
 VERSION = os.environ["PI_WALLET_VERSION"]
 CODESIGN_IDENTITY = os.environ.get("PI_WALLET_CODESIGN_IDENTITY") or None
+
+data_files = [
+    (str(TOR_LICENSE_DIR / "tor.txt"), "licenses/tor"),
+    (str(TOR_LICENSE_DIR / "libevent.txt"), "licenses/tor"),
+    (str(TOR_LICENSE_DIR / "openssl.txt"), "licenses/tor"),
+]
+if BOOTSTRAP_CONFIG:
+    data_files.append((str(Path(BOOTSTRAP_CONFIG).resolve()), "."))
 
 
 analysis = Analysis(
@@ -24,11 +33,7 @@ analysis = Analysis(
         (str(TOR_BINARY), "."),
         (str(TOR_LIBEVENT), "."),
     ],
-    datas=[
-        (str(TOR_LICENSE_DIR / "tor.txt"), "licenses/tor"),
-        (str(TOR_LICENSE_DIR / "libevent.txt"), "licenses/tor"),
-        (str(TOR_LICENSE_DIR / "openssl.txt"), "licenses/tor"),
-    ],
+    datas=data_files,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

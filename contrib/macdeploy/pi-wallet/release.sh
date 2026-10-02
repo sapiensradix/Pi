@@ -7,6 +7,7 @@ DIST_DIR="${PI_WALLET_DIST_DIR:-$REPO_ROOT/dist}"
 RELEASE_DIR="${PI_WALLET_RELEASE_DIR:-$DIST_DIR/release}"
 IDENTITY="${PI_WALLET_CODESIGN_IDENTITY:-}"
 NOTARY_PROFILE="${PI_WALLET_NOTARY_PROFILE:-}"
+BOOTSTRAP_CONFIG="${PI_WALLET_BOOTSTRAP_CONFIG:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "error: Pi Wallet macOS release packaging must run on macOS" >&2
@@ -20,6 +21,11 @@ fi
 
 if [[ -z "$NOTARY_PROFILE" ]]; then
     echo "error: PI_WALLET_NOTARY_PROFILE must name a notarytool Keychain profile" >&2
+    exit 1
+fi
+
+if [[ -z "$BOOTSTRAP_CONFIG" || ! -f "$BOOTSTRAP_CONFIG" ]]; then
+    echo "error: PI_WALLET_BOOTSTRAP_CONFIG must name the reviewed Tor-only release configuration" >&2
     exit 1
 fi
 

@@ -15,6 +15,7 @@ TOR_ARCHIVE_SHA256="8acb0b590f6be34084dcb6d84009ac0c61cc7c5261b7a19d2ab94845aa9b
 TOR_ARCHIVE_URL="https://dist.torproject.org/torbrowser/$TOR_BUNDLE_VERSION/$TOR_ARCHIVE_NAME"
 TOR_CACHE_DIR="${PI_WALLET_TOR_CACHE_DIR:-${TMPDIR:-/tmp}/pi-wallet-tor-cache}"
 TOR_ARCHIVE="${PI_WALLET_TOR_ARCHIVE:-$TOR_CACHE_DIR/$TOR_ARCHIVE_NAME}"
+BOOTSTRAP_CONFIG="${PI_WALLET_BOOTSTRAP_CONFIG:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "error: Pi Wallet macOS packaging must run on macOS" >&2
@@ -91,6 +92,30 @@ if ! otool -L "$TOR_BINARY" | grep -Fq "@executable_path/libevent-2.1.7.dylib"; 
     exit 1
 fi
 
+CONFIG_WORK="$(mktemp -d "${TMPDIR:-/tmp}/pi-wallet-config.XXXXXX")"
+PACKAGED_BOOTSTRAP_CONFIG=""
+if [[ -n "$BOOTSTRAP_CONFIG" ]]; then
+    if [[ ! -f "$BOOTSTRAP_CONFIG" ]]; then
+        echo "error: release bootstrap configuration was not found: $BOOTSTRAP_CONFIG" >&2
+        exit 1
+    fi
+    "$PYTHON_BIN" - "$REPO_ROOT/src/pi_wallet.py" "$BOOTSTRAP_CONFIG" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).resolve()
+config = Path(sys.argv[2]).resolve()
+spec = importlib.util.spec_from_file_location("pi_wallet_config_validator", source)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.validate_tor_only_config(config, minimum_bootstraps=3)
+PY
+    PACKAGED_BOOTSTRAP_CONFIG="$CONFIG_WORK/pi.conf.release"
+    cp "$BOOTSTRAP_CONFIG" "$PACKAGED_BOOTSTRAP_CONFIG"
+    chmod 600 "$PACKAGED_BOOTSTRAP_CONFIG"
+fi
+
 read_define() {
     local name="$1"
     sed -n "s/^define(_CLIENT_VERSION_${name},[[:space:]]*\([0-9][0-9]*\)).*/\1/p" "$REPO_ROOT/configure.ac" | head -n 1
@@ -114,7 +139,7 @@ fi
     --requirement "$PACKAGING_DIR/requirements.txt"
 
 ICON_WORK="$(mktemp -d "${TMPDIR:-/tmp}/pi-wallet-icon.XXXXXX")"
-trap 'rm -rf -- "$ICON_WORK" "$TOR_WORK"' EXIT
+trap 'rm -rf -- "$ICON_WORK" "$TOR_WORK" "$CONFIG_WORK"' EXIT
 ICONSET="$ICON_WORK/PiWallet.iconset"
 mkdir -p "$ICONSET"
 
@@ -148,6 +173,11 @@ export PI_WALLET_VERSION
 export PI_WALLET_TOR_BINARY="$TOR_BINARY"
 export PI_WALLET_TOR_LIBEVENT="$TOR_LIBEVENT"
 export PI_WALLET_TOR_LICENSE_DIR="$TOR_LICENSE_DIR"
+if [[ -n "$PACKAGED_BOOTSTRAP_CONFIG" ]]; then
+    export PI_WALLET_PACKAGED_BOOTSTRAP_CONFIG="$PACKAGED_BOOTSTRAP_CONFIG"
+else
+    unset PI_WALLET_PACKAGED_BOOTSTRAP_CONFIG || true
+fi
 
 "$VENV_DIR/bin/pyinstaller" \
     --clean \
@@ -180,6 +210,12 @@ for license_name in tor.txt libevent.txt openssl.txt; do
         exit 1
     fi
 done
+if [[ -n "$PACKAGED_BOOTSTRAP_CONFIG" ]]; then
+    if ! find "$APP_PATH/Contents" -name pi.conf.release -type f -print -quit | grep -q .; then
+        echo "error: Pi Wallet.app is missing its approved bootstrap configuration" >&2
+        exit 1
+    fi
+fi
 
 echo "Built: $APP_PATH"
 echo "Architecture: x86_64"

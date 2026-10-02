@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, scrolledtext
 import base64
 from decimal import Decimal, InvalidOperation
+import hashlib
 import json
 import os
 import queue
@@ -58,6 +59,7 @@ ACTIVE_WALLET_STATE_PATH = DATADIR / "wallet-gui-state.json"
 DIR = os.path.dirname(os.path.abspath(__file__))
 PID_BIN = os.path.join(DIR, "pid")
 TOR_BIN = os.path.join(DIR, "tor")
+RELEASE_CONFIG_PATH = Path(DIR) / "pi.conf.release"
 _RPC_STATE = threading.local()
 
 
@@ -121,6 +123,182 @@ def read_conf(path=None):
     except FileNotFoundError:
         pass
     return conf
+
+
+def _read_mainnet_config(path):
+    options = {}
+    section = None
+    try:
+        with Path(path).open(encoding="utf-8") as config_file:
+            for line_number, raw_line in enumerate(config_file, start=1):
+                line = raw_line.strip()
+                if not line or line.startswith(("#", ";")):
+                    continue
+                if line.startswith("[") and line.endswith("]"):
+                    section = line[1:-1].strip().lower()
+                    continue
+                if section not in (None, "main"):
+                    continue
+                if "=" not in line:
+                    raise PiRPCError(
+                        f"pi.conf line {line_number} is invalid.",
+                        kind="config",
+                    )
+                key, value = line.split("=", 1)
+                key = key.strip().lower().lstrip("-")
+                value = value.strip()
+                if not key or not value:
+                    raise PiRPCError(
+                        f"pi.conf line {line_number} is invalid.",
+                        kind="config",
+                    )
+                options.setdefault(key, []).append(value)
+    except FileNotFoundError as exc:
+        raise PiRPCError("Pi release configuration is missing.", kind="config") from exc
+    except OSError as exc:
+        raise PiRPCError("Pi configuration cannot be read.", kind="config") from exc
+    return options
+
+
+def _valid_onion_v3_hostname(hostname):
+    try:
+        hostname = hostname.lower()
+        if not hostname.endswith(".onion"):
+            return False
+        onion_name = hostname[:-6]
+        if len(onion_name) != 56:
+            return False
+        decoded = base64.b32decode(onion_name.upper())
+    except (ValueError, TypeError):
+        return False
+    if len(decoded) != 35 or decoded[-1] != 3:
+        return False
+    public_key = decoded[:32]
+    checksum = decoded[32:34]
+    expected = hashlib.sha3_256(
+        b".onion checksum" + public_key + b"\x03"
+    ).digest()[:2]
+    return checksum == expected
+
+
+def _valid_onion_v3_endpoint(endpoint):
+    try:
+        hostname, port = endpoint.lower().rsplit(":", 1)
+    except (AttributeError, ValueError):
+        return False
+    return port == "31415" and _valid_onion_v3_hostname(hostname)
+
+
+def _require_config_values(options, key, expected):
+    values = options.get(key, [])
+    if not values or any(value.lower() != expected for value in values):
+        raise PiRPCError(
+            f"pi.conf must set {key}={expected} for Tor-only operation.",
+            kind="config",
+        )
+
+
+def validate_tor_only_config(path, minimum_bootstraps=1):
+    path = Path(path)
+    if path.is_symlink():
+        raise PiRPCError("Pi configuration must not be a symbolic link.", kind="config")
+    options = _read_mainnet_config(path)
+
+    for key, expected in (
+        ("server", "1"),
+        ("listen", "1"),
+        ("bind", "127.0.0.1:31415"),
+        ("discover", "0"),
+        ("dnsseed", "0"),
+        ("fixedseeds", "0"),
+        ("listenonion", "0"),
+        ("onlynet", "onion"),
+        ("proxy", "127.0.0.1:9050"),
+        ("onion", "127.0.0.1:9050"),
+        ("rpcbind", "127.0.0.1"),
+        ("rpcallowip", "127.0.0.1"),
+    ):
+        _require_config_values(options, key, expected)
+    if "port" in options:
+        _require_config_values(options, "port", "31415")
+
+    for forbidden_key in ("includeconf", "whitebind"):
+        if forbidden_key in options:
+            raise PiRPCError(
+                f"pi.conf option {forbidden_key} is not allowed in the Tor-only wallet.",
+                kind="config",
+            )
+
+    for external_address in options.get("externalip", []):
+        if ":" in external_address:
+            valid_external = _valid_onion_v3_endpoint(external_address)
+        else:
+            valid_external = _valid_onion_v3_hostname(external_address)
+        if not valid_external:
+            raise PiRPCError(
+                "Every externalip entry must be a valid Tor v3 onion address.",
+                kind="config",
+            )
+
+    endpoints = options.get("addnode", [])
+    if len(endpoints) < minimum_bootstraps:
+        raise PiRPCError(
+            f"pi.conf requires at least {minimum_bootstraps} Tor v3 bootstrap nodes.",
+            kind="config",
+        )
+    if len(set(endpoint.lower() for endpoint in endpoints)) != len(endpoints):
+        raise PiRPCError("pi.conf contains duplicate bootstrap nodes.", kind="config")
+    if any(not _valid_onion_v3_endpoint(endpoint) for endpoint in endpoints):
+        raise PiRPCError(
+            "Every addnode entry must be a valid Tor v3 onion endpoint on port 31415.",
+            kind="config",
+        )
+
+    for key in ("connect", "seednode"):
+        if any(not _valid_onion_v3_endpoint(value) for value in options.get(key, [])):
+            raise PiRPCError(
+                f"Every {key} entry must be a valid Tor v3 onion endpoint on port 31415.",
+                kind="config",
+            )
+    return endpoints
+
+
+def ensure_tor_only_config(config_path=None, template_path=None):
+    config_path = CONF_PATH if config_path is None else Path(config_path)
+    template_path = (
+        RELEASE_CONFIG_PATH if template_path is None else Path(template_path)
+    )
+    if config_path.exists() or config_path.is_symlink():
+        validate_tor_only_config(config_path, minimum_bootstraps=1)
+        return "existing"
+
+    validate_tor_only_config(template_path, minimum_bootstraps=3)
+    temporary = None
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = config_path.with_name(f".{config_path.name}.{os.getpid()}.tmp")
+        with template_path.open("rb") as source, temporary.open("xb") as target:
+            target.write(source.read())
+            target.flush()
+            os.fsync(target.fileno())
+        os.chmod(temporary, 0o600)
+        try:
+            os.link(temporary, config_path)
+        except FileExistsError:
+            validate_tor_only_config(config_path, minimum_bootstraps=1)
+            return "existing"
+        validate_tor_only_config(config_path, minimum_bootstraps=3)
+        return "created"
+    except PiRPCError:
+        raise
+    except OSError as exc:
+        raise PiRPCError("Pi configuration could not be installed.", kind="config") from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _rpc_port(conf):
@@ -846,6 +1024,21 @@ class PiWallet:
         self._queue_ui(self._tor_ready)
 
     def _tor_ready(self):
+        if self.closing:
+            return
+        self._start_worker(self._prepare_runtime_config, "config-init")
+
+    def _prepare_runtime_config(self):
+        self._queue_ui(self.status_var.set, "Checking Pi network configuration...")
+        try:
+            ensure_tor_only_config()
+        except PiRPCError as exc:
+            if not self.closing:
+                self._queue_ui(self._daemon_failed, str(exc))
+            return
+        self._queue_ui(self._config_ready)
+
+    def _config_ready(self):
         if self.closing:
             return
         self._start_worker(self._initialize_daemon, "daemon-init")
