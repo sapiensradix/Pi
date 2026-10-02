@@ -24,6 +24,7 @@ MINING_MAX_TRIES = 1_000_000
 MINING_RETRY_DELAY = 0.05
 WALLET_UNLOCK_SECONDS = 30
 DEFAULT_WALLET_NAME = "pi_wallet"
+RESTORED_WALLET_PREFIX = "pi_wallet_restored_"
 SENSITIVE_WALLET_METHODS = {
     "createwallet",
     "encryptwallet",
@@ -48,9 +49,48 @@ def default_pi_datadir(platform=None, environ=None, home=None):
 
 DATADIR = default_pi_datadir()
 CONF_PATH = DATADIR / "pi.conf"
+ACTIVE_WALLET_STATE_PATH = DATADIR / "wallet-gui-state.json"
 DIR = os.path.dirname(os.path.abspath(__file__))
 PID_BIN = os.path.join(DIR, "pid")
 _RPC_STATE = threading.local()
+
+
+def _is_gui_wallet_name(name):
+    if name == DEFAULT_WALLET_NAME:
+        return True
+    if not isinstance(name, str) or not name.startswith(RESTORED_WALLET_PREFIX):
+        return False
+    return name[len(RESTORED_WALLET_PREFIX):].isdigit()
+
+
+def read_active_wallet_name(path=None):
+    path = ACTIVE_WALLET_STATE_PATH if path is None else Path(path)
+    try:
+        with path.open(encoding="utf-8") as state_file:
+            state = json.load(state_file)
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return DEFAULT_WALLET_NAME
+    name = state.get("active_wallet") if isinstance(state, dict) else None
+    return name if _is_gui_wallet_name(name) else DEFAULT_WALLET_NAME
+
+
+def write_active_wallet_name(name, path=None):
+    if not _is_gui_wallet_name(name):
+        raise ValueError("Invalid Pi GUI wallet name.")
+    path = ACTIVE_WALLET_STATE_PATH if path is None else Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as state_file:
+            json.dump({"active_wallet": name}, state_file, separators=(",", ":"))
+            state_file.write("\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 class PiRPCError(Exception):
@@ -533,6 +573,7 @@ class PiWallet:
         self.current_address = ""
         self.active_wallet = None
         self.wallet_encrypted = False
+        self.wallet_transitioning = False
         self.stop_event = threading.Event()
         self.mining_thread = None
         self.balance_thread = None
@@ -644,7 +685,10 @@ class PiWallet:
     def _init(self):
         self._queue_ui(self.status_var.set, "Connecting...")
         try:
-            self.active_wallet = self._ensure_wallet(require_encryption=True)
+            self.active_wallet = self._ensure_wallet(
+                require_encryption=True,
+                preferred_wallet=read_active_wallet_name(),
+            )
         except PiRPCError as exc:
             self._queue_ui(self.status_var.set, str(exc))
             return
@@ -744,28 +788,37 @@ class PiWallet:
         else:
             error = rpc_error("Cannot connect to Pi Core.")
             self._queue_ui(self.status_var.set, error)
-            return
+            return False
         info = self._wallet_rpc("getwalletinfo")
         if not info:
             error = rpc_error()
             self._queue_ui(self.status_var.set, error)
-            return
+            return False
         if hasattr(self, "wallet_encrypted"):
             if "unlocked_until" not in info:
                 self._queue_ui(self._prompt_encrypt_existing_wallet)
-                return
+                return True
             self.wallet_encrypted = True
         mature = info.get("balance", Decimal("0"))
         immature = info.get("immature_balance", Decimal("0"))
         self._queue_ui(self._set_balance, mature, immature)
         self._queue_ui(self._wallet_ready)
+        return True
 
-    def _ensure_wallet(self, passphrase=None, require_encryption=False):
+    def _ensure_wallet(
+        self,
+        passphrase=None,
+        require_encryption=False,
+        preferred_wallet=DEFAULT_WALLET_NAME,
+    ):
+        if not _is_gui_wallet_name(preferred_wallet):
+            raise PiRPCError("Pi Wallet selected an invalid wallet name.")
         loaded = _rpc_request("listwallets")
         if not isinstance(loaded, list):
             raise PiRPCError("Pi Core returned an invalid wallet list.")
-        if DEFAULT_WALLET_NAME in loaded:
-            return DEFAULT_WALLET_NAME
+        if preferred_wallet in loaded:
+            self._unload_other_gui_wallets(preferred_wallet, loaded)
+            return preferred_wallet
 
         wallet_dir = _rpc_request("listwalletdir")
         entries = wallet_dir.get("wallets", []) if isinstance(wallet_dir, dict) else []
@@ -774,8 +827,26 @@ class PiWallet:
             for entry in entries
             if isinstance(entry, dict) and isinstance(entry.get("name"), str)
         }
-        if DEFAULT_WALLET_NAME in wallet_names:
-            _rpc_request("loadwallet", [DEFAULT_WALLET_NAME])
+        if preferred_wallet in wallet_names:
+            load_params = [preferred_wallet]
+            if preferred_wallet != DEFAULT_WALLET_NAME:
+                load_params.append(True)
+            _rpc_request("loadwallet", load_params)
+        elif preferred_wallet != DEFAULT_WALLET_NAME:
+            if DEFAULT_WALLET_NAME not in wallet_names:
+                raise PiRPCError(
+                    "The selected restored Pi wallet is missing. "
+                    "The original wallet files were not changed."
+                )
+            preferred_wallet = DEFAULT_WALLET_NAME
+            _rpc_request("loadwallet", [preferred_wallet])
+            try:
+                write_active_wallet_name(preferred_wallet)
+            except OSError as exc:
+                raise PiRPCError(
+                    "Pi Wallet found the original wallet but could not update "
+                    f"its local selection: {exc}"
+                ) from exc
         else:
             if require_encryption and passphrase is None:
                 passphrase = self._request_new_wallet_password()
@@ -797,9 +868,15 @@ class PiWallet:
             _rpc_request("createwallet", create_params)
 
         loaded = _rpc_request("listwallets")
-        if DEFAULT_WALLET_NAME not in loaded:
-            raise PiRPCError("Pi Core did not load the default Pi wallet.")
-        return DEFAULT_WALLET_NAME
+        if preferred_wallet not in loaded:
+            raise PiRPCError("Pi Core did not load the selected Pi wallet.")
+        self._unload_other_gui_wallets(preferred_wallet, loaded)
+        return preferred_wallet
+
+    def _unload_other_gui_wallets(self, active_wallet, loaded_wallets):
+        for wallet_name in loaded_wallets:
+            if wallet_name != active_wallet and _is_gui_wallet_name(wallet_name):
+                _rpc_request("unloadwallet", [wallet_name, False])
 
     def _wallet_rpc(self, method, params=None):
         return rpc(method, params, wallet=self.active_wallet)
@@ -910,12 +987,12 @@ class PiWallet:
 
         imp_f = tk.Frame(self.root, bg="white", padx=30)
         imp_f.pack(fill="x", pady=8)
-        tk.Label(imp_f, text="IMPORT WALLET", font=("Helvetica", 10, "bold"), fg="#555555", bg="white").pack(anchor="w")
-        self.import_var = tk.StringVar()
-        self.import_entry = tk.Entry(imp_f, textvariable=self.import_var, font=("Courier", 9), fg="#111111", bg="#f0f0f0", relief="flat", bd=1, state="disabled")
-        self.import_entry.pack(fill="x", pady=4, ipady=6)
-        self.import_btn = tk.Button(imp_f, text="Import Private Key →", command=self.import_key, font=("Helvetica", 10, "bold"), fg="white", bg="#111111", relief="flat", cursor="hand2", padx=12, pady=5, state="disabled")
-        self.import_btn.pack(anchor="e", pady=2)
+        tk.Label(imp_f, text="RESTORE WALLET", font=("Helvetica", 10, "bold"), fg="#555555", bg="white").pack(anchor="w")
+        self.restore_var = tk.StringVar(value="Choose an encrypted Pi wallet backup file.")
+        self.restore_entry = tk.Entry(imp_f, textvariable=self.restore_var, font=("Courier", 9), fg="#111111", bg="#f0f0f0", relief="flat", bd=1, state="readonly")
+        self.restore_entry.pack(fill="x", pady=4, ipady=6)
+        self.restore_btn = tk.Button(imp_f, text="Restore Wallet →", command=self.restore_wallet, font=("Helvetica", 10, "bold"), fg="white", bg="#111111", relief="flat", cursor="hand2", padx=12, pady=5, state="disabled")
+        self.restore_btn.pack(anchor="e", pady=2)
 
         tk.Frame(self.root, height=1, bg="#cccccc").pack(fill="x", padx=30)
 
@@ -945,8 +1022,7 @@ class PiWallet:
             self.new_address_btn,
             self.history_btn,
             self.backup_btn,
-            self.import_entry,
-            self.import_btn,
+            self.restore_btn,
             self.send_addr_entry,
             self.send_amt_entry,
             self.send_btn,
@@ -1046,26 +1122,126 @@ class PiWallet:
                 rpc_error("Wallet backup failed."),
             )
 
-    def import_key(self):
-        key = self.import_var.get().strip()
-        if not key:
-            messagebox.showwarning("Import", "Enter a private key first.")
+    def restore_wallet(self):
+        if self.wallet_transitioning:
             return
-        if not messagebox.askyesno("Import", "Import this private key?"):
-            return
-        self.status_var.set("Importing...")
-        def _imp():
-            success, _ = self._wallet_rpc_with_status(
-                "importprivkey", [key, "", True]
+        if self.mining:
+            messagebox.showwarning(
+                "Restore Wallet",
+                "Stop mining before restoring a wallet.",
+                parent=self.root,
             )
-            if success:
-                self._queue_ui(self.status_var.set, "Import successful!")
-                self._queue_ui(self.import_var.set, "")
-                self._queue_ui(self._request_balance_update)
-            else:
-                error = rpc_error("Import failed.")
-                self._queue_ui(self.status_var.set, error)
-        self._start_worker(_imp, "wallet-import")
+            return
+        backup_file = filedialog.askopenfilename(
+            title="Restore Pi Wallet",
+            filetypes=[("Pi Wallet Backup", "*.bak"), ("All Files", "*")],
+            parent=self.root,
+        )
+        if not backup_file:
+            return
+        if not messagebox.askyesno(
+            "Restore Wallet",
+            "Restore this backup and make it the active Pi wallet?\n\n"
+            "The current wallet will be kept on disk and will not be deleted.",
+            parent=self.root,
+        ):
+            return
+        self.wallet_transitioning = True
+        self.restore_var.set(Path(backup_file).name)
+        self._set_daemon_controls_enabled(False)
+        if self.refresh_after_id is not None:
+            try:
+                self.root.after_cancel(self.refresh_after_id)
+            except tk.TclError:
+                pass
+            self.refresh_after_id = None
+        self.status_var.set("Restoring Pi wallet...")
+        self._start_worker(
+            self._restore_wallet,
+            "wallet-restore",
+            backup_file,
+        )
+
+    def _restore_wallet(self, backup_file):
+        old_wallet = self.active_wallet
+        restored_wallet = f"{RESTORED_WALLET_PREFIX}{time.time_ns()}"
+        old_wallet_unloaded = False
+        try:
+            _rpc_request(
+                "restorewallet",
+                [restored_wallet, backup_file, True],
+            )
+            info = _rpc_request("getwalletinfo", wallet=restored_wallet)
+            if not isinstance(info, dict):
+                raise PiRPCError("Pi Core could not verify the restored wallet.")
+            if info.get("format") != "sqlite" or info.get("descriptors") is not True:
+                raise PiRPCError(
+                    "The selected backup is not a Pi descriptor wallet backup."
+                )
+            if info.get("private_keys_enabled") is not True:
+                raise PiRPCError(
+                    "The selected backup does not contain an enabled private-key wallet."
+                )
+            _rpc_request("unloadwallet", [old_wallet, False])
+            old_wallet_unloaded = True
+            write_active_wallet_name(restored_wallet)
+        except (OSError, ValueError, PiRPCError) as exc:
+            self._rollback_restored_wallet(
+                restored_wallet,
+                old_wallet,
+                old_wallet_unloaded,
+            )
+            self._queue_ui(self._restore_wallet_failed, str(exc))
+            return
+
+        self.active_wallet = restored_wallet
+        self.wallet_encrypted = False
+        if not self._finish_wallet_init():
+            self._queue_ui(self._restore_wallet_initialization_failed)
+            return
+        self._queue_ui(self._restore_wallet_completed)
+
+    def _rollback_restored_wallet(
+        self,
+        restored_wallet,
+        old_wallet,
+        old_wallet_unloaded,
+    ):
+        try:
+            loaded = _rpc_request("listwallets")
+            if restored_wallet in loaded:
+                _rpc_request("unloadwallet", [restored_wallet, False])
+        except PiRPCError:
+            pass
+        if old_wallet_unloaded:
+            try:
+                _rpc_request("loadwallet", [old_wallet, True])
+            except PiRPCError:
+                pass
+
+    def _restore_wallet_failed(self, message):
+        self.wallet_transitioning = False
+        self._set_daemon_controls_enabled(True)
+        self.mine_btn.config(state="normal" if self.mining_ready else "disabled")
+        self.status_var.set(message)
+        if self.refresh_after_id is None:
+            self._schedule_auto_refresh()
+
+    def _restore_wallet_completed(self):
+        self.wallet_transitioning = False
+        messagebox.showinfo(
+            "Restore Wallet",
+            "The Pi wallet was restored successfully.\n\n"
+            "Its existing password is still required to send PI.",
+            parent=self.root,
+        )
+
+    def _restore_wallet_initialization_failed(self):
+        self.wallet_transitioning = False
+        self.status_var.set(
+            "The wallet was restored, but Pi Wallet could not initialize it. "
+            "Restart Pi Wallet to retry."
+        )
 
     def send_pi(self):
         addr = self.send_addr_var.get().strip()
