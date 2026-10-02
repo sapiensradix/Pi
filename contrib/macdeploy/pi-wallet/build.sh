@@ -88,10 +88,13 @@ export PI_WALLET_VERSION
 
 APP_PATH="$DIST_DIR/Pi Wallet.app"
 plutil -lint "$APP_PATH/Contents/Info.plist"
-codesign --force --deep --sign - "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
 echo "Built: $APP_PATH"
 echo "Architecture: x86_64"
 echo "Version: $PI_WALLET_VERSION"
-echo "Signature: ad hoc (not notarized)"
+if [[ -n "${PI_WALLET_CODESIGN_IDENTITY:-}" ]]; then
+    echo "Signature: $PI_WALLET_CODESIGN_IDENTITY (not notarized)"
+else
+    echo "Signature: ad hoc (not notarized)"
+fi

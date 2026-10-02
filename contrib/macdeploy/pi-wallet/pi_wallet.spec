@@ -10,6 +10,7 @@ WALLET_SCRIPT = REPO_ROOT / "src" / "pi_wallet.py"
 DAEMON_BINARY = REPO_ROOT / "src" / "pid"
 ICON_FILE = Path(os.environ["PI_WALLET_ICON"]).resolve()
 VERSION = os.environ["PI_WALLET_VERSION"]
+CODESIGN_IDENTITY = os.environ.get("PI_WALLET_CODESIGN_IDENTITY") or None
 
 
 analysis = Analysis(
@@ -41,7 +42,7 @@ executable = EXE(
     console=False,
     argv_emulation=False,
     target_arch="x86_64",
-    codesign_identity=None,
+    codesign_identity=CODESIGN_IDENTITY,
     entitlements_file=None,
 )
 

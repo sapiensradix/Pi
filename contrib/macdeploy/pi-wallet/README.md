@@ -10,10 +10,11 @@ configuration file, wallet data, credentials, or onion keys.
 - Bundle identifier: `org.sapiensradix.pi.wallet`
 - Version source: `configure.ac`
 - Architecture: `x86_64`
-- Signing: ad hoc for local validation only
+- Local-build signing: ad hoc
+- Release signing: Developer ID Application with hardened runtime
 
-Developer ID signing, Apple notarization, DMG production, Apple Silicon, Tor
-lifecycle management, and release configuration are separate release tasks.
+Apple Silicon, Tor lifecycle management, and release configuration are
+separate release tasks.
 
 ## Prerequisites
 
@@ -50,3 +51,37 @@ otool -L "dist/Pi Wallet.app/Contents/Frameworks/pid"
 An ad hoc signature proves bundle integrity on the build machine. It is not a
 Developer ID signature and does not make the application ready for public macOS
 distribution.
+
+## Signed and notarized DMG
+
+Public distribution requires an Apple Developer Program membership, a valid
+`Developer ID Application` certificate installed in the login Keychain, and a
+notarytool profile stored in the Keychain. Store notarization credentials
+interactively; never put an Apple password, app-specific password, API key, or
+private key in this repository or in a command-line argument:
+
+```sh
+xcrun notarytool store-credentials "pi-wallet-notary"
+```
+
+Then run the release pipeline with the exact certificate name shown by
+`security find-identity -v -p codesigning`:
+
+```sh
+PI_WALLET_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
+PI_WALLET_NOTARY_PROFILE="pi-wallet-notary" \
+contrib/macdeploy/pi-wallet/release.sh
+```
+
+The release script fails closed when either credential is unavailable. On
+success it:
+
+1. builds the app with hardened-runtime Developer ID signing;
+2. verifies the complete app signature;
+3. creates and signs `Pi-Wallet-24.0.1-macos-x86_64.dmg`;
+4. submits the DMG to Apple's notary service and waits for acceptance;
+5. staples and validates the notarization ticket;
+6. runs Gatekeeper assessment; and
+7. writes `dist/release/SHA256SUMS`.
+
+The DMG and checksums are release artifacts and must not be committed to Git.
