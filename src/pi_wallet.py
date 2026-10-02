@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, simpledialog, scrolledtext
+from tkinter import filedialog, messagebox, simpledialog, scrolledtext
 import base64
 from decimal import Decimal, InvalidOperation
 import json
@@ -903,7 +903,7 @@ class PiWallet:
         self.new_address_btn.pack(side="left", padx=(8,0))
         self.history_btn = tk.Button(bf2, text="History", command=self.show_history, font=("Helvetica", 10, "bold"), fg="#111111", bg="white", relief="solid", bd=2, cursor="hand2", padx=12, pady=5, state="disabled")
         self.history_btn.pack(side="left", padx=(8,0))
-        self.backup_btn = tk.Button(bf2, text="Backup Key", command=self.backup_key, font=("Helvetica", 10, "bold"), fg="#111111", bg="white", relief="solid", bd=2, cursor="hand2", padx=12, pady=5, state="disabled")
+        self.backup_btn = tk.Button(bf2, text="Backup Wallet", command=self.backup_wallet, font=("Helvetica", 10, "bold"), fg="#111111", bg="white", relief="solid", bd=2, cursor="hand2", padx=12, pady=5, state="disabled")
         self.backup_btn.pack(side="left", padx=(8,0))
 
         tk.Frame(self.root, height=1, bg="#cccccc").pack(fill="x", padx=30)
@@ -1005,32 +1005,46 @@ class PiWallet:
             txt.delete("1.0", "end")
             txt.insert("end", text)
 
-    def backup_key(self):
-        addr = self.address_var.get()
-        if not addr or addr in ("Connecting...",):
-            messagebox.showwarning("Backup", "No address loaded yet.")
+    def backup_wallet(self):
+        if not self.active_wallet:
+            messagebox.showwarning("Backup Wallet", "No wallet is loaded yet.")
             return
-        def _dump():
-            key = self._wallet_rpc("dumpprivkey", [addr])
-            if key:
-                self._queue_ui(self._show_private_key, key)
-            else:
-                error = rpc_error("Could not export key.")
-                self._queue_ui(messagebox.showerror, "Backup", error)
-        self._start_worker(_dump, "wallet-backup")
+        destination = filedialog.asksaveasfilename(
+            title="Back Up Pi Wallet",
+            defaultextension=".bak",
+            filetypes=[("Pi Wallet Backup", "*.bak"), ("All Files", "*")],
+            initialfile="pi_wallet_backup.bak",
+            parent=self.root,
+        )
+        if not destination:
+            return
+        self.status_var.set("Backing up Pi wallet...")
+        self._start_worker(
+            self._backup_wallet,
+            "wallet-backup",
+            destination,
+        )
 
-    def _show_private_key(self, key):
-        win = tk.Toplevel(self.root)
-        win.title("Private Key")
-        win.geometry("480x180")
-        win.configure(bg="white")
-        tk.Label(win, text="KEEP SECRET! Anyone with this key owns your PI.", font=("Helvetica", 10, "bold"), fg="red", bg="white").pack(pady=8)
-        entry = tk.Entry(win, font=("Courier", 9), bg="#f0f0f0", relief="flat")
-        entry.pack(pady=4, padx=20, fill="x")
-        entry.insert(0, key)
-        entry.config(state="readonly")
-        tk.Button(win, text="Copy Key", command=lambda: [win.clipboard_clear(), win.clipboard_append(key)],
-            font=("Helvetica", 10, "bold"), fg="white", bg="#111111", relief="flat", padx=12, pady=5).pack()
+    def _backup_wallet(self, destination):
+        success, _ = self._wallet_rpc_with_status("backupwallet", [destination])
+        if success:
+            self._queue_ui(self.status_var.set, "Wallet backup completed.")
+            self._queue_ui(
+                messagebox.showinfo,
+                "Backup Wallet",
+                "The encrypted Pi wallet backup was saved successfully.\n\n"
+                "Keep the backup file and wallet password in separate safe places.",
+            )
+        else:
+            self._queue_ui(
+                messagebox.showerror,
+                "Backup Wallet",
+                rpc_error("Wallet backup failed."),
+            )
+            self._queue_ui(
+                self.status_var.set,
+                rpc_error("Wallet backup failed."),
+            )
 
     def import_key(self):
         key = self.import_var.get().strip()
