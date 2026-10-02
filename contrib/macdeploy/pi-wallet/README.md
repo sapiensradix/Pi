@@ -1,8 +1,9 @@
 # Pi Wallet macOS packaging
 
-This directory builds the Python/Tk Pi Wallet and the Pi daemon into one Intel
-macOS application bundle. It does not bundle Tor, bootstrap endpoints, a
-configuration file, wallet data, credentials, or onion keys.
+This directory builds the Python/Tk Pi Wallet, the Pi daemon, and the official
+Tor Expert Bundle runtime into one Intel macOS application bundle. It does not
+bundle bootstrap endpoints, a configuration file, wallet data, credentials, or
+onion keys.
 
 ## Scope
 
@@ -10,11 +11,32 @@ configuration file, wallet data, credentials, or onion keys.
 - Bundle identifier: `org.sapiensradix.pi.wallet`
 - Version source: `configure.ac`
 - Architecture: `x86_64`
+- Tor: `0.4.9.13` from Tor Expert Bundle `15.0.24`
 - Local-build signing: ad hoc
 - Release signing: Developer ID Application with hardened runtime
 
-Apple Silicon, Tor lifecycle management, and release configuration are
-separate release tasks.
+Apple Silicon and release configuration are separate release tasks.
+
+## Tor supply-chain verification
+
+The build downloads the macOS x86_64 Tor Expert Bundle from the Tor Project and
+accepts it only when its SHA-256 hash is:
+
+```text
+8acb0b590f6be34084dcb6d84009ac0c61cc7c5261b7a19d2ab94845aa9bd5b6
+```
+
+This hash was established from
+`tor-expert-bundle-macos-x86_64-15.0.24.tar.gz` after its detached signature was
+verified with the Tor Browser Developers signing-key fingerprint:
+
+```text
+EF6E286DDA85EA2A4BA7DE684E2C6E8793298290
+```
+
+Set `PI_WALLET_TOR_ARCHIVE` to use a previously downloaded copy. The same hash
+check remains mandatory. The archive and extracted binaries are build inputs;
+they must not be committed to Git.
 
 ## Prerequisites
 
@@ -23,6 +45,7 @@ separate release tasks.
 - An already-built x86_64 `src/pid`
 - The build-time dynamic libraries required by `src/pid`
 - Network access on the first run to install the pinned packaging tools
+  and download the checksum-pinned Tor Expert Bundle
 
 The packaging tools are installed into a temporary virtual environment. Set
 `PI_WALLET_BUILD_VENV` to reuse a different isolated environment.
@@ -46,7 +69,14 @@ codesign --verify --deep --strict --verbose=2 "dist/Pi Wallet.app"
 file "dist/Pi Wallet.app/Contents/MacOS/Pi Wallet"
 file "dist/Pi Wallet.app/Contents/Frameworks/pid"
 otool -L "dist/Pi Wallet.app/Contents/Frameworks/pid"
+"dist/Pi Wallet.app/Contents/Frameworks/tor" --version
+otool -L "dist/Pi Wallet.app/Contents/Frameworks/tor"
+find "dist/Pi Wallet.app/Contents" -path '*/licenses/tor/*' -type f -print
 ```
+
+The packaged Tor executable must load its adjacent bundled libevent library and
+must not reference `/usr/local`, `/opt/homebrew`, a temporary directory, or any
+other build-machine package path.
 
 An ad hoc signature proves bundle integrity on the build machine. It is not a
 Developer ID signature and does not make the application ready for public macOS

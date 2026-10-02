@@ -8,6 +8,9 @@ PACKAGING_DIR = Path(SPECPATH).resolve()
 REPO_ROOT = PACKAGING_DIR.parents[2]
 WALLET_SCRIPT = REPO_ROOT / "src" / "pi_wallet.py"
 DAEMON_BINARY = REPO_ROOT / "src" / "pid"
+TOR_BINARY = Path(os.environ["PI_WALLET_TOR_BINARY"]).resolve()
+TOR_LIBEVENT = Path(os.environ["PI_WALLET_TOR_LIBEVENT"]).resolve()
+TOR_LICENSE_DIR = Path(os.environ["PI_WALLET_TOR_LICENSE_DIR"]).resolve()
 ICON_FILE = Path(os.environ["PI_WALLET_ICON"]).resolve()
 VERSION = os.environ["PI_WALLET_VERSION"]
 CODESIGN_IDENTITY = os.environ.get("PI_WALLET_CODESIGN_IDENTITY") or None
@@ -16,8 +19,16 @@ CODESIGN_IDENTITY = os.environ.get("PI_WALLET_CODESIGN_IDENTITY") or None
 analysis = Analysis(
     [str(WALLET_SCRIPT)],
     pathex=[str(REPO_ROOT / "src")],
-    binaries=[(str(DAEMON_BINARY), ".")],
-    datas=[],
+    binaries=[
+        (str(DAEMON_BINARY), "."),
+        (str(TOR_BINARY), "."),
+        (str(TOR_LIBEVENT), "."),
+    ],
+    datas=[
+        (str(TOR_LICENSE_DIR / "tor.txt"), "licenses/tor"),
+        (str(TOR_LICENSE_DIR / "libevent.txt"), "licenses/tor"),
+        (str(TOR_LICENSE_DIR / "openssl.txt"), "licenses/tor"),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

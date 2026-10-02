@@ -8,6 +8,13 @@ VENV_DIR="${PI_WALLET_BUILD_VENV:-${TMPDIR:-/tmp}/pi-wallet-packaging-venv-py312
 DIST_DIR="${PI_WALLET_DIST_DIR:-$REPO_ROOT/dist}"
 WORK_DIR="${PI_WALLET_WORK_DIR:-${TMPDIR:-/tmp}/pi-wallet-pyinstaller-work}"
 PID_BIN="$REPO_ROOT/src/pid"
+TOR_BUNDLE_VERSION="15.0.24"
+TOR_VERSION="0.4.9.13"
+TOR_ARCHIVE_NAME="tor-expert-bundle-macos-x86_64-$TOR_BUNDLE_VERSION.tar.gz"
+TOR_ARCHIVE_SHA256="8acb0b590f6be34084dcb6d84009ac0c61cc7c5261b7a19d2ab94845aa9bd5b6"
+TOR_ARCHIVE_URL="https://dist.torproject.org/torbrowser/$TOR_BUNDLE_VERSION/$TOR_ARCHIVE_NAME"
+TOR_CACHE_DIR="${PI_WALLET_TOR_CACHE_DIR:-${TMPDIR:-/tmp}/pi-wallet-tor-cache}"
+TOR_ARCHIVE="${PI_WALLET_TOR_ARCHIVE:-$TOR_CACHE_DIR/$TOR_ARCHIVE_NAME}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "error: Pi Wallet macOS packaging must run on macOS" >&2
@@ -21,6 +28,66 @@ fi
 
 if ! file "$PID_BIN" | grep -q "x86_64"; then
     echo "error: Patch P1 produces an Intel app, but src/pid is not x86_64" >&2
+    exit 1
+fi
+
+for tool in curl file otool shasum tar; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "error: required packaging tool is unavailable: $tool" >&2
+        exit 1
+    fi
+done
+
+mkdir -p "$TOR_CACHE_DIR"
+if [[ ! -f "$TOR_ARCHIVE" ]]; then
+    TOR_DOWNLOAD="$TOR_ARCHIVE.download"
+    curl --fail --location --silent --show-error \
+        --output "$TOR_DOWNLOAD" \
+        "$TOR_ARCHIVE_URL"
+    mv "$TOR_DOWNLOAD" "$TOR_ARCHIVE"
+fi
+
+TOR_ARCHIVE_ACTUAL_SHA256="$(shasum -a 256 "$TOR_ARCHIVE" | awk '{print $1}')"
+if [[ "$TOR_ARCHIVE_ACTUAL_SHA256" != "$TOR_ARCHIVE_SHA256" ]]; then
+    echo "error: Tor Expert Bundle checksum mismatch" >&2
+    echo "expected: $TOR_ARCHIVE_SHA256" >&2
+    echo "actual:   $TOR_ARCHIVE_ACTUAL_SHA256" >&2
+    exit 1
+fi
+
+TOR_WORK="$(mktemp -d "${TMPDIR:-/tmp}/pi-wallet-tor.XXXXXX")"
+tar -xzf "$TOR_ARCHIVE" -C "$TOR_WORK"
+TOR_BINARY="$TOR_WORK/tor/tor"
+TOR_LIBEVENT="$TOR_WORK/tor/libevent-2.1.7.dylib"
+TOR_LICENSE_DIR="$TOR_WORK/docs"
+
+for required_file in \
+    "$TOR_BINARY" \
+    "$TOR_LIBEVENT" \
+    "$TOR_LICENSE_DIR/tor.txt" \
+    "$TOR_LICENSE_DIR/libevent.txt" \
+    "$TOR_LICENSE_DIR/openssl.txt"; do
+    if [[ ! -f "$required_file" ]]; then
+        echo "error: Tor Expert Bundle is missing: $required_file" >&2
+        exit 1
+    fi
+done
+if [[ ! -x "$TOR_BINARY" ]]; then
+    echo "error: bundled Tor is not executable" >&2
+    exit 1
+fi
+for runtime_file in "$TOR_BINARY" "$TOR_LIBEVENT"; do
+    if ! file "$runtime_file" | grep -q "x86_64"; then
+        echo "error: Tor Expert Bundle contains a non-x86_64 runtime: $runtime_file" >&2
+        exit 1
+    fi
+done
+if ! "$TOR_BINARY" --version | grep -Fq "Tor version $TOR_VERSION "; then
+    echo "error: unexpected Tor version in the verified Expert Bundle" >&2
+    exit 1
+fi
+if ! otool -L "$TOR_BINARY" | grep -Fq "@executable_path/libevent-2.1.7.dylib"; then
+    echo "error: bundled Tor does not load its adjacent libevent runtime" >&2
     exit 1
 fi
 
@@ -47,7 +114,7 @@ fi
     --requirement "$PACKAGING_DIR/requirements.txt"
 
 ICON_WORK="$(mktemp -d "${TMPDIR:-/tmp}/pi-wallet-icon.XXXXXX")"
-trap 'rm -rf -- "$ICON_WORK"' EXIT
+trap 'rm -rf -- "$ICON_WORK" "$TOR_WORK"' EXIT
 ICONSET="$ICON_WORK/PiWallet.iconset"
 mkdir -p "$ICONSET"
 
@@ -78,6 +145,9 @@ iconutil -c icns "$ICONSET" -o "$ICON_WORK/PiWallet.icns"
 
 export PI_WALLET_ICON="$ICON_WORK/PiWallet.icns"
 export PI_WALLET_VERSION
+export PI_WALLET_TOR_BINARY="$TOR_BINARY"
+export PI_WALLET_TOR_LIBEVENT="$TOR_LIBEVENT"
+export PI_WALLET_TOR_LICENSE_DIR="$TOR_LICENSE_DIR"
 
 "$VENV_DIR/bin/pyinstaller" \
     --clean \
@@ -87,12 +157,34 @@ export PI_WALLET_VERSION
     "$PACKAGING_DIR/pi_wallet.spec"
 
 APP_PATH="$DIST_DIR/Pi Wallet.app"
+APP_TOR="$APP_PATH/Contents/Frameworks/tor"
+APP_TOR_LIBEVENT="$APP_PATH/Contents/Frameworks/libevent-2.1.7.dylib"
 plutil -lint "$APP_PATH/Contents/Info.plist"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+if [[ ! -x "$APP_TOR" || ! -f "$APP_TOR_LIBEVENT" ]]; then
+    echo "error: Pi Wallet.app is missing its bundled Tor runtime" >&2
+    exit 1
+fi
+if ! "$APP_TOR" --version | grep -Fq "Tor version $TOR_VERSION "; then
+    echo "error: packaged Tor failed its version check" >&2
+    exit 1
+fi
+if otool -L "$APP_TOR" | grep -E '/usr/local/|/opt/homebrew/|/private/tmp/|/var/folders/' >/dev/null; then
+    echo "error: packaged Tor contains a build-machine runtime dependency" >&2
+    exit 1
+fi
+for license_name in tor.txt libevent.txt openssl.txt; do
+    if ! find "$APP_PATH/Contents" -path "*/licenses/tor/$license_name" -type f -print -quit | grep -q .; then
+        echo "error: Pi Wallet.app is missing Tor license notice: $license_name" >&2
+        exit 1
+    fi
+done
 
 echo "Built: $APP_PATH"
 echo "Architecture: x86_64"
 echo "Version: $PI_WALLET_VERSION"
+echo "Tor: $TOR_VERSION (Tor Expert Bundle $TOR_BUNDLE_VERSION)"
 if [[ -n "${PI_WALLET_CODESIGN_IDENTITY:-}" ]]; then
     echo "Signature: $PI_WALLET_CODESIGN_IDENTITY (not notarized)"
 else
