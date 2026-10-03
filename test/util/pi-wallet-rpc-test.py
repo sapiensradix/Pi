@@ -19,6 +19,31 @@ pi_wallet = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pi_wallet)
 
 
+class BundledExecutablePathTest(unittest.TestCase):
+    def test_windows_runtime_uses_exe_suffix(self):
+        directory = Path("C:/Pi Wallet")
+        self.assertEqual(
+            pi_wallet.bundled_executable_path("pid", "win32", directory),
+            str(directory / "pid.exe"),
+        )
+        self.assertEqual(
+            pi_wallet.bundled_executable_path("tor", "win32", directory),
+            str(directory / "tor.exe"),
+        )
+
+    def test_unix_runtime_has_no_executable_suffix(self):
+        directory = Path("/opt/pi-wallet")
+        for platform in ("darwin", "linux"):
+            self.assertEqual(
+                pi_wallet.bundled_executable_path("pid", platform, directory),
+                str(directory / "pid"),
+            )
+            self.assertEqual(
+                pi_wallet.bundled_executable_path("tor", platform, directory),
+                str(directory / "tor"),
+            )
+
+
 class Response:
     def __init__(self, body):
         self.body = body

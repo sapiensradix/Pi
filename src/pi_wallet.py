@@ -53,12 +53,19 @@ def default_pi_datadir(platform=None, environ=None, home=None):
     return home / ".pi"
 
 
+def bundled_executable_path(name, platform=None, directory=None):
+    platform = sys.platform if platform is None else platform
+    directory = Path(DIR if directory is None else directory)
+    suffix = ".exe" if platform == "win32" else ""
+    return str(directory / f"{name}{suffix}")
+
+
 DATADIR = default_pi_datadir()
 CONF_PATH = DATADIR / "pi.conf"
 ACTIVE_WALLET_STATE_PATH = DATADIR / "wallet-gui-state.json"
 DIR = os.path.dirname(os.path.abspath(__file__))
-PID_BIN = os.path.join(DIR, "pid")
-TOR_BIN = os.path.join(DIR, "tor")
+PID_BIN = bundled_executable_path("pid")
+TOR_BIN = bundled_executable_path("tor")
 RELEASE_CONFIG_PATH = Path(DIR) / "pi.conf.release"
 _RPC_STATE = threading.local()
 
