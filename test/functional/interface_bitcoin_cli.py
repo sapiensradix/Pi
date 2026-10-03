@@ -148,8 +148,8 @@ class TestBitcoinCli(BitcoinTestFramework):
             wallet_info = self.nodes[0].getwalletinfo()
             assert_equal(int(cli_get_info['Keypool size']), wallet_info['keypoolsize'])
             assert_equal(int(cli_get_info['Unlocked until']), wallet_info['unlocked_until'])
-            assert_equal(Decimal(cli_get_info['Transaction fee rate (-paytxfee) (BTC/kvB)']), wallet_info['paytxfee'])
-            assert_equal(Decimal(cli_get_info['Min tx relay fee rate (BTC/kvB)']), network_info['relayfee'])
+            assert_equal(Decimal(cli_get_info['Transaction fee rate (-paytxfee) (PI/kvB)']), wallet_info['paytxfee'])
+            assert_equal(Decimal(cli_get_info['Min tx relay fee rate (PI/kvB)']), network_info['relayfee'])
             assert_equal(self.nodes[0].cli.getwalletinfo(), wallet_info)
 
             # Setup to test -getinfo, -generate, and -rpcwallet= with multiple wallets.
@@ -306,7 +306,7 @@ class TestBitcoinCli(BitcoinTestFramework):
         self.log.info("Test -version with node stopped")
         self.stop_node(0)
         cli_response = self.nodes[0].cli('-version').send_cli()
-        assert f"{self.config['environment']['PACKAGE_NAME']} RPC client version" in cli_response
+        assert f"{self.config['environment']['PACKAGE_NAME']} {self.config['environment']['CLI_NAME']} version" in cli_response
 
         self.log.info("Test -rpcwait option successfully waits for RPC connection")
         self.nodes[0].start()  # start node without RPC connection
