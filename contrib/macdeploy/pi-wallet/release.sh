@@ -56,6 +56,7 @@ xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null
 
 PI_WALLET_DIST_DIR="$DIST_DIR" \
 PI_WALLET_CODESIGN_IDENTITY="$IDENTITY" \
+PI_WALLET_BOOTSTRAP_CONFIG="$BOOTSTRAP_CONFIG" \
     "$PACKAGING_DIR/build.sh"
 
 APP_PATH="$DIST_DIR/Pi Wallet.app"
