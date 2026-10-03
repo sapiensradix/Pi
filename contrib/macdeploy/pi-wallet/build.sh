@@ -200,7 +200,7 @@ if ! "$APP_TOR" --version | grep -Fq "Tor version $TOR_VERSION "; then
     echo "error: packaged Tor failed its version check" >&2
     exit 1
 fi
-if otool -L "$APP_TOR" | grep -E '/usr/local/|/opt/homebrew/|/private/tmp/|/var/folders/' >/dev/null; then
+if otool -L "$APP_TOR" | sed '1d' | grep -E '/usr/local/|/opt/homebrew/|/private/tmp/|/var/folders/' >/dev/null; then
     echo "error: packaged Tor contains a build-machine runtime dependency" >&2
     exit 1
 fi
