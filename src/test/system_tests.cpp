@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
+#include <chainparams.h>
 #include <test/util/setup_common.h>
 #include <util/system.h>
 #include <univalue.h>
@@ -58,6 +59,16 @@ BOOST_AUTO_TEST_CASE(default_datadir_and_config_identity)
 
     BOOST_CHECK_EQUAL(PI_CONF_FILENAME, "pi.conf");
     BOOST_CHECK_NE(PI_CONF_FILENAME, "bitcoin.conf");
+}
+
+BOOST_AUTO_TEST_CASE(checkpoint_height)
+{
+    CCheckpointData checkpoints;
+    BOOST_CHECK_EQUAL(checkpoints.GetHeight(), 0);
+
+    checkpoints.mapCheckpoints.emplace(0, uint256{});
+    checkpoints.mapCheckpoints.emplace(42, uint256{});
+    BOOST_CHECK_EQUAL(checkpoints.GetHeight(), 42);
 }
 
 #ifdef ENABLE_EXTERNAL_SIGNER
