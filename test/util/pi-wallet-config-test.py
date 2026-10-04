@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -74,7 +75,8 @@ class TorOnlyConfigTest(unittest.TestCase):
         result = pi_wallet.ensure_tor_only_config(self.config, self.template)
         self.assertEqual(result, "created")
         self.assertEqual(self.config.read_bytes(), self.template.read_bytes())
-        self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+        if os.name != "nt":
+            self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
         self.assertEqual(
             pi_wallet.validate_tor_only_config(self.config, minimum_bootstraps=3),
             self.endpoints,
