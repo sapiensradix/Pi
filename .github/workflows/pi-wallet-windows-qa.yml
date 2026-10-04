@@ -1,0 +1,143 @@
+name: Pi Wallet Windows x64 QA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - audit/recovery-20260719
+
+permissions:
+  contents: read
+
+jobs:
+  build-pi-core:
+    name: Cross-build Pi Core for Windows x64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@v4
+
+      - name: Install MinGW build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            autoconf automake bsdmainutils build-essential curl git libtool \
+            pkg-config g++-mingw-w64-x86-64-posix
+
+      - name: Cache deterministic dependencies
+        uses: actions/cache@v4
+        with:
+          path: depends/built
+          key: pi-depends-windows-x86-64-${{ hashFiles('depends/**') }}
+
+      - name: Build deterministic Windows dependencies
+        run: make -C depends HOST=x86_64-w64-mingw32 NO_QT=1 NO_BDB=1 -j2
+
+      - name: Configure Pi Core
+        run: |
+          ./autogen.sh
+          CONFIG_SITE="$PWD/depends/x86_64-w64-mingw32/share/config.site" \
+            ./configure \
+              --prefix=/ \
+              --without-gui \
+              --without-bdb \
+              --disable-tests \
+              --disable-bench \
+              --disable-fuzz-binary \
+              --disable-ccache
+
+      - name: Build Pi daemon
+        run: make -j2 src/pid.exe
+
+      - name: Verify Pi daemon artifact
+        run: |
+          test -f src/pid.exe
+          file src/pid.exe | grep -F 'PE32+ executable'
+          sha256sum src/pid.exe
+
+      - name: Upload Pi daemon for native packaging
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-core-windows-x86-64
+          path: src/pid.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  package-and-test:
+    name: Package and test on Windows x64
+    needs: build-pi-core
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Check out the same reviewed source
+        uses: actions/checkout@v4
+
+      - name: Install Python 3.12 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+
+      - name: Download cross-built Pi daemon
+        uses: actions/download-artifact@v4
+        with:
+          name: pi-core-windows-x86-64
+          path: src
+
+      - name: Run Pi Wallet regression tests
+        shell: pwsh
+        run: |
+          Get-ChildItem test/util/pi-wallet-*-test.py | Sort-Object Name | ForEach-Object {
+            python $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Test failed: $($_.Name)" }
+          }
+
+      - name: Build unsigned QA package
+        shell: pwsh
+        run: python contrib/windeploy/pi-wallet/build.py
+
+      - name: Verify packaged runtimes
+        shell: pwsh
+        run: |
+          $app = Resolve-Path 'dist/Pi Wallet/Pi Wallet.exe'
+          $daemon = Get-ChildItem 'dist/Pi Wallet' -Recurse -Filter pid.exe -File
+          $tor = Get-ChildItem 'dist/Pi Wallet' -Recurse -Filter tor.exe -File
+          if ($daemon.Count -ne 1) { throw 'The package must contain exactly one pid.exe' }
+          if ($tor.Count -ne 1) { throw 'The package must contain exactly one tor.exe' }
+          & $daemon.FullName -version
+          if ($LASTEXITCODE -ne 0) { throw 'The packaged Pi daemon did not start' }
+          & $tor.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw 'The packaged Tor runtime did not start' }
+          Get-Item $app | Format-List FullName,Length
+
+      - name: Verify package privacy boundary
+        shell: pwsh
+        run: |
+          $forbidden = @('.cookie', 'wallet.dat', 'debug.log', 'hostname', 'private_key')
+          foreach ($name in $forbidden) {
+            if (Get-ChildItem 'dist/Pi Wallet' -Recurse -Force | Where-Object { $_.Name -eq $name }) {
+              throw "Forbidden private file was packaged: $name"
+            }
+          }
+          if (Get-ChildItem 'dist/Pi Wallet' -Recurse -Filter pi.conf.release -File) {
+            throw 'Unsigned QA package unexpectedly contains a production bootstrap configuration'
+          }
+
+      - name: Write QA checksums
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem dist/Pi-Wallet-*-windows-x86_64.zip -File
+          if ($archive.Count -ne 1) { throw 'Expected exactly one Windows QA archive' }
+          $hash = (Get-FileHash -Algorithm SHA256 $archive.FullName).Hash.ToLowerInvariant()
+          "$hash  $($archive.Name)" | Set-Content -Encoding ascii dist/SHA256SUMS-windows-x86_64
+
+      - name: Upload unsigned QA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pi-Wallet-windows-x86_64-qa-unsigned
+          path: |
+            dist/Pi-Wallet-*-windows-x86_64.zip
+            dist/SHA256SUMS-windows-x86_64
+          if-no-files-found: error
+          retention-days: 7
