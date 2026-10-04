@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -87,8 +88,9 @@ class TorControllerTest(unittest.TestCase):
         self.assertEqual(command[0], str(self.tor_path))
         self.assertIn("127.0.0.1:9050", command)
         self.assertIn(str(controller.tor_datadir), command)
-        self.assertEqual(controller.tor_datadir.stat().st_mode & 0o777, 0o700)
-        self.assertEqual(controller.startup_log_path.stat().st_mode & 0o777, 0o600)
+        if os.name != "nt":
+            self.assertEqual(controller.tor_datadir.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(controller.startup_log_path.stat().st_mode & 0o777, 0o600)
         self.assertTrue(popen.call_args.kwargs["stdout"].closed)
 
     def test_non_socks_listener_fails_closed_without_spawning(self):

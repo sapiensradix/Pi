@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -40,7 +41,8 @@ class WalletRestoreTest(unittest.TestCase):
             pi_wallet.write_active_wallet_name(name, state_path)
 
             self.assertEqual(pi_wallet.read_active_wallet_name(state_path), name)
-            self.assertEqual(state_path.stat().st_mode & 0o777, 0o600)
+            if os.name != "nt":
+                self.assertEqual(state_path.stat().st_mode & 0o777, 0o600)
 
     def test_invalid_active_wallet_state_falls_back_to_default(self):
         with tempfile.TemporaryDirectory() as directory:

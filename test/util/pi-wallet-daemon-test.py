@@ -15,7 +15,7 @@ SOURCE = Path(__file__).resolve().parents[2] / "src" / "pi_wallet.py"
 SPEC = importlib.util.spec_from_file_location("pi_wallet", SOURCE)
 pi_wallet = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(pi_wallet)
-PID = SOURCE.parent / "pid"
+PID = Path(pi_wallet.PID_BIN)
 
 
 class FakeProcess:
